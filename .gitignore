@@ -1,0 +1,15 @@
+# Local database
+booktracker.db
+booktracker.db-wal
+booktracker.db-shm
+lnrelease.db*
+
+# Virtual environment
+venv/
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
