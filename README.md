@@ -241,7 +241,11 @@ Neither is included in this repo since the exact setup depends on where
 you place the app and how you manage your Python environment, but both
 are standard OS features and only take a couple of minutes to set up.
 
+---
+
 <img width="1816" height="1412" alt="Home Book Tracker — Year 2026--2026--2026-08-09 20 04 43" src="https://github.com/user-attachments/assets/ad2c04ac-98e8-4127-b72b-0f5c1804d34c" />
+
+---
 
 ## Adding a book yourself
 
@@ -260,7 +264,11 @@ Search, then click a result to pull its full details into the form below:
 | Audnexus | **ASIN only**, no keyword search | Audnexus's public API doesn't support title search — type or paste an exact ASIN and it returns the full rich record directly (narrator, runtime, genres, summary, exact series + position). |
 | Amazon | **Not searchable** | Amazon has no public product-catalog API. Use "Fetch from URL" instead. |
 
+---
+
 <img width="1720" height="1460" alt="Add Book Tracker — Add a Book--2026--2026-08-09 20 05 19" src="https://github.com/user-attachments/assets/699925c0-313f-47e8-9241-c71e553c3f57" />
+
+---
 
 ### Setting up Hardcover
 
@@ -350,7 +358,15 @@ Save applies your changes immediately; Remove deletes it entirely (only
 works on books *you* added — unstar an LNRelease title instead of trying
 to delete it, since that data comes from the synced feed).
 
+---
+
 <img width="856" height="982" alt="Edit Book Tracker — My Starred--2026--2026-08-09 20 10 13" src="https://github.com/user-attachments/assets/28b0d436-ee11-4880-a53e-27f6234647da" />
+
+---
+
+<img width="1928" height="902" alt="Added Book Tracker — Add a Book--2026--2026-08-09 21 04 33" src="https://github.com/user-attachments/assets/95221b39-90fb-4315-bdd7-ac4113ce46ca" />
+
+---
 
 ### Filtering by status
 
