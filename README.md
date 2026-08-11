@@ -554,9 +554,3 @@ version, the following categories have been addressed:
   through the real code (see the version's changelog entry below), not
   just reviewed by eye.
 
-If your own scan turns up something not covered here, it's worth
-opening an issue (or just asking whoever helped you build this) rather
-than assuming it's fine — static analysis tools evolve, and this list
-reflects what's been checked as of the version above, not a permanent
-guarantee.
-
