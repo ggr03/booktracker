@@ -168,7 +168,7 @@ API key(s) for that terminal session.
 ### Linux / macOS
 
 ```bash
-git clone <this-repo-url>
+git clone https://github.com/ggr03/booktracker
 cd booktracker
 
 python3 -m venv venv
