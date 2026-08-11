@@ -515,27 +515,6 @@ reading data rather than project source.
 
 ## Security
 
-Everything in the file list above is what's meant to be public. Before
-your first push, it's worth a `git status`/`git diff --staged` gut-check
-that nothing else snuck in — but as shipped, this repo has been checked
-for:
-
-- **API keys/tokens.** `HARDCOVER_API_TOKEN` and `GOOGLE_BOOKS_API_KEY`
-  are read from environment variables only (`os.environ.get(...)` in
-  `external_search.py`) — neither is hardcoded anywhere in source, and
-  `.gitignore` excludes `.env`/`*.env` in case you ever keep one locally
-  for convenience.
-- **Your reading data.** `booktracker.db` (title history, what you've
-  starred, reading status) is excluded via `.gitignore` and was never
-  part of this repo's source.
-- **IPs/hostnames/usernames.** The only IP-shaped strings in this repo
-  are generic networking constants: `127.0.0.1` / `0.0.0.0` (standard
-  loopback/bind-all addresses), Google's public DNS `8.8.8.8` (used only
-  to ask the OS "what's my LAN IP" — see `_local_ip()` in `app.py`, no
-  data is sent to it beyond a UDP handshake), and one made-up example
-  address in the README's LAN-access explanation. Nothing here is tied
-  to any specific machine, network, or person.
-
 **Static analysis (e.g. GitHub's CodeQL default setup).** As of this
 version, the following categories have been addressed:
 
