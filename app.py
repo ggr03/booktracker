@@ -31,6 +31,21 @@ DB_PATH = db.DEFAULT_DB_PATH
 DEFAULT_PORT = 7077
 
 
+def _external_error_response(e: "external_search.ExternalSearchError", status: int = 502):
+    """Turn a caught ExternalSearchError into a JSON error response.
+
+    ExternalSearchError's message is deliberately curated, user-facing
+    text (rate-limit hints, "isn't configured" notices, etc.) -- see
+    external_search.py, where every raise site builds that text itself
+    rather than embedding a raw exception or a URL that might carry a
+    credential in its query string. So returning it to the browser here
+    is intentional and safe, not a stack-trace leak. Logging it
+    server-side too just keeps a record for anyone tailing the process.
+    """
+    app.logger.warning("external_search error: %s", e)
+    return jsonify({"error": str(e)}), status
+
+
 @app.route("/")
 def index():
     years = db.get_years(db_path=DB_PATH)
@@ -174,7 +189,7 @@ def api_external_search():
         try:
             return jsonify([external_search.get_audnexus_book(q)])
         except external_search.ExternalSearchError as e:
-            return jsonify({"error": str(e)}), 502
+            return _external_error_response(e)
     if len(q) < 2:
         return jsonify([])
     try:
@@ -190,7 +205,7 @@ def api_external_search():
             # different author above the one actually meant.
             results = external_search.search_google_books(q, author)
     except external_search.ExternalSearchError as e:
-        return jsonify({"error": str(e)}), 502
+        return _external_error_response(e)
     return jsonify(results)
 
 
@@ -207,7 +222,7 @@ def api_external_detail():
         else:
             detail = external_search.get_book_detail(source, external_id)
     except external_search.ExternalSearchError as e:
-        return jsonify({"error": str(e)}), 502
+        return _external_error_response(e)
     return jsonify(detail)
 
 
@@ -220,7 +235,7 @@ def api_external_fetch_url():
     try:
         detail = external_search.fetch_by_url(url)
     except external_search.ExternalSearchError as e:
-        return jsonify({"error": str(e)}), 502
+        return _external_error_response(e)
     return jsonify(detail)
 
 

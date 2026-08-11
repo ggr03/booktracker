@@ -29,6 +29,17 @@ small `v2026.08.06-01`-style tag in the header on every page).
 
 ### Changelog
 
+- **2026.08.10-01** — Security pass ahead of making this repo public:
+  fixed an SSRF hole in the Amazon-URL-fetch feature (strict hostname
+  validation, not just a substring check), 12 ReDoS-shaped regexes
+  (ambiguous adjacent quantifiers replaced with negated character
+  classes, plus defensive input-length caps), stack-trace/URL exposure
+  in external-search error responses (curated messages only, full
+  detail logged server-side), and a stored-XSS gap where book metadata
+  (title, author, etc.) could break out of a `<script>` tag or inject
+  raw HTML via unescaped client-side rendering — both now escaped and
+  verified against real exploit payloads. New [Security](#security)
+  section documents all of this in one place.
 - **2026.08.09-02** — Added an Author column to the expanded accordion
   table (★ My Starred, and the year page's status-filter view), between
   Title and Publisher: Date - Vol - Title - Author - Publisher - Format
@@ -241,12 +252,6 @@ Neither is included in this repo since the exact setup depends on where
 you place the app and how you manage your Python environment, but both
 are standard OS features and only take a couple of minutes to set up.
 
----
-
-<img width="1816" height="1412" alt="Home Book Tracker — Year 2026--2026--2026-08-09 20 04 43" src="https://github.com/user-attachments/assets/ad2c04ac-98e8-4127-b72b-0f5c1804d34c" />
-
----
-
 ## Adding a book yourself
 
 The **➕ Add Book** page (its own page, not a popup — linked from every
@@ -263,12 +268,6 @@ Search, then click a result to pull its full details into the form below:
 | Audible | Title/author keyword search | Unauthenticated public catalog-search endpoint — the same one tools like Audiobookshelf use. |
 | Audnexus | **ASIN only**, no keyword search | Audnexus's public API doesn't support title search — type or paste an exact ASIN and it returns the full rich record directly (narrator, runtime, genres, summary, exact series + position). |
 | Amazon | **Not searchable** | Amazon has no public product-catalog API. Use "Fetch from URL" instead. |
-
----
-
-<img width="1720" height="1460" alt="Add Book Tracker — Add a Book--2026--2026-08-09 20 05 19" src="https://github.com/user-attachments/assets/699925c0-313f-47e8-9241-c71e553c3f57" />
-
----
 
 ### Setting up Hardcover
 
@@ -357,16 +356,6 @@ item in the "Your Book Tracker items" list at the bottom of the Add page
 Save applies your changes immediately; Remove deletes it entirely (only
 works on books *you* added — unstar an LNRelease title instead of trying
 to delete it, since that data comes from the synced feed).
-
----
-
-<img width="856" height="982" alt="Edit Book Tracker — My Starred--2026--2026-08-09 20 10 13" src="https://github.com/user-attachments/assets/28b0d436-ee11-4880-a53e-27f6234647da" />
-
----
-
-<img width="1928" height="902" alt="Added Book Tracker — Add a Book--2026--2026-08-09 21 04 33" src="https://github.com/user-attachments/assets/95221b39-90fb-4315-bdd7-ac4113ce46ca" />
-
----
 
 ### Filtering by status
 
@@ -523,3 +512,72 @@ Not shown above: `booktracker.db`, the SQLite database itself, and
 run the app and are excluded from git via `.gitignore`, since they're
 local, machine-specific, and (in the DB's case) contain your personal
 reading data rather than project source.
+
+## Security
+
+Everything in the file list above is what's meant to be public. Before
+your first push, it's worth a `git status`/`git diff --staged` gut-check
+that nothing else snuck in — but as shipped, this repo has been checked
+for:
+
+- **API keys/tokens.** `HARDCOVER_API_TOKEN` and `GOOGLE_BOOKS_API_KEY`
+  are read from environment variables only (`os.environ.get(...)` in
+  `external_search.py`) — neither is hardcoded anywhere in source, and
+  `.gitignore` excludes `.env`/`*.env` in case you ever keep one locally
+  for convenience.
+- **Your reading data.** `booktracker.db` (title history, what you've
+  starred, reading status) is excluded via `.gitignore` and was never
+  part of this repo's source.
+- **IPs/hostnames/usernames.** The only IP-shaped strings in this repo
+  are generic networking constants: `127.0.0.1` / `0.0.0.0` (standard
+  loopback/bind-all addresses), Google's public DNS `8.8.8.8` (used only
+  to ask the OS "what's my LAN IP" — see `_local_ip()` in `app.py`, no
+  data is sent to it beyond a UDP handshake), and one made-up example
+  address in the README's LAN-access explanation. Nothing here is tied
+  to any specific machine, network, or person.
+
+**Static analysis (e.g. GitHub's CodeQL default setup).** As of this
+version, the following categories have been addressed:
+
+- **SSRF** — the "paste an Amazon URL" feature makes a live outbound
+  request to whatever URL you give it, which is inherently an SSRF
+  shape. `_is_amazon_url()` in `external_search.py` validates the
+  request's *actual parsed hostname* (via `urllib.parse`) against a
+  strict `amazon.<tld>` pattern before any request is made — not just
+  whether the string "amazon.com" appears somewhere in it — closing off
+  tricks like `http://internal-host/?x=amazon.com/dp/...` being treated
+  as a legitimate Amazon link.
+- **ReDoS** — several regexes used adjacent ambiguous quantifiers (e.g.
+  `\s*` next to a lazy `.*?` that could match the same characters),
+  which can blow up matching time on adversarial input. Rewritten to use
+  negated character classes instead of `.*?` wherever the delimiter is
+  known, plus defensive length caps (`_MAX_SERIES_TEXT_CHARS`,
+  `_MAX_TITLE_CHARS`, `MAX_SCRAPED_HTML_CHARS`) so worst-case regex cost
+  stays bounded regardless of what an external API or scraped page
+  hands back.
+- **Stack-trace / internal-detail exposure** — error responses from the
+  external-search endpoints return curated, human-written messages (the
+  same ones documented throughout this README, e.g. "Hardcover isn't
+  configured..."), never a raw caught exception or a URL that might
+  carry a credential in its query string. Full exception detail is
+  logged server-side only (stderr / `app.logger`), not sent to the
+  browser.
+- **Stored XSS via JSON-in-`<script>`** — book metadata (title, author,
+  publisher, etc.) is user-controlled — either typed directly, or
+  returned by an external API/scraped page you don't control — and gets
+  embedded into every page twice: once server-side into a `<script>`
+  tag as JSON, and again client-side into HTML via JavaScript template
+  literals. Both paths are now escaped: `_safe_json_for_script()` in
+  `template.py` prevents a title containing literal `</script>` from
+  closing the tag early, and every place client-side JS builds HTML
+  from book data now runs it through `escapeHtml()`/`escapeAttr()`
+  first. Both fixes were verified against actual exploit payloads run
+  through the real code (see the version's changelog entry below), not
+  just reviewed by eye.
+
+If your own scan turns up something not covered here, it's worth
+opening an issue (or just asking whoever helped you build this) rather
+than assuming it's fine — static analysis tools evolve, and this list
+reflects what's been checked as of the version above, not a permanent
+guarantee.
+

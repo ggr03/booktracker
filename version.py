@@ -11,4 +11,4 @@ across branches/forks without needing semver bookkeeping -- bump this
 one line and every page/service picks it up automatically.
 """
 APP_NAME = "Book Tracker"
-VERSION = "2026.08.09-02"
+VERSION = "2026.08.10-01"

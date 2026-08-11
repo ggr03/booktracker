@@ -2,6 +2,23 @@ import json
 
 from version import APP_NAME, VERSION
 
+
+def _safe_json_for_script(obj) -> str:
+    """json.dumps(), but safe to embed inside a <script> tag.
+
+    Plain json.dumps() does not escape '<', so a book title/author/etc.
+    containing the literal text "</script>" -- typed by a user, or
+    returned by an external metadata source we don't control -- would
+    prematurely close the surrounding <script> tag when the browser's
+    HTML parser runs (which happens before any JS parsing), letting an
+    attacker inject arbitrary HTML/script into the page. Escaping '<',
+    '>', and '&' as \\uXXXX sequences neutralizes that while remaining
+    valid JSON and decoding back to the exact original string in JS."""
+    return (json.dumps(obj)
+            .replace("<", "\\u003c")
+            .replace(">", "\\u003e")
+            .replace("&", "\\u0026"))
+
 MONTH_NAMES = {1: 'January', 2: 'February', 3: 'March', 4: 'April',
                5: 'May', 6: 'June', 7: 'July', 8: 'August',
                9: 'September', 10: 'October', 11: 'November', 12: 'December'}
@@ -552,7 +569,7 @@ function renderAccordion(containerEl, releases, opts) {
             ? allVols.filter(r => tracked.some(f => r[f]))
             : allVols;
         const seriesLabel = allVols[0].series_title || allVols[0].title;
-        const title = seriesLabel + (allVols[0].author ? ` <span style="color:var(--text-dim);font-weight:400;font-size:.85em;">— ${allVols[0].author}</span>` : '');
+        const title = escapeHtml(seriesLabel) + (allVols[0].author ? ` <span style="color:var(--text-dim);font-weight:400;font-size:.85em;">— ${escapeHtml(allVols[0].author)}</span>` : '');
         const seriesStatus = vols.length && vols.every(v => v.status === vols[0].status) ? vols[0].status : null;
         const expandedCls = expandedSlugs.has(slug) ? ' expanded' : '';
         const countLabel = tracked.length && vols.length !== allVols.length
@@ -595,11 +612,11 @@ function renderAccordion(containerEl, releases, opts) {
             const isStandaloneManual = r.source === 'manual' && !allVols[0].series_title;
             const volText = isStandaloneManual ? '' : (r.volume || '');
             html += `<tr data-release-id="${r.id}">
-                <td class="col-date" data-label="Date">${r.date}</td>
-                <td class="col-vol" data-label="Vol"><a class="volume-link" href="${r.url || '#'}" target="_blank" rel="noopener noreferrer">${volText}</a></td>
-                <td class="col-title" data-label="Title">${r.source === 'manual' ? `<span class="editable-title" onclick="event.stopPropagation(); openEditModal(${r.id})" title="Click to view/edit">${titleText}</span>` : titleText}</td>
-                <td class="col-author" data-label="Author">${r.author || ''}</td>
-                <td class="col-publisher" data-label="Publisher">${r.publisher || ''}</td>
+                <td class="col-date" data-label="Date">${escapeHtml(r.date)}</td>
+                <td class="col-vol" data-label="Vol"><a class="volume-link" href="${escapeAttr(r.url || '#')}" target="_blank" rel="noopener noreferrer">${escapeHtml(volText)}</a></td>
+                <td class="col-title" data-label="Title">${r.source === 'manual' ? `<span class="editable-title" onclick="event.stopPropagation(); openEditModal(${r.id})" title="Click to view/edit">${escapeHtml(titleText)}</span>` : escapeHtml(titleText)}</td>
+                <td class="col-author" data-label="Author">${escapeHtml(r.author || '')}</td>
+                <td class="col-publisher" data-label="Publisher">${escapeHtml(r.publisher || '')}</td>
                 <td class="col-format" data-label="Format">${badges}</td>
                 <td class="col-status" data-label="Status">${statusPickerHTML('volume', r.id, r.status || 'to_read')}</td>
                 <td class="col-edit" data-label=""><button class="edit-row-btn" title="Edit this book" onclick="event.stopPropagation(); openEditModal(${r.id})">✎</button></td>
@@ -740,10 +757,10 @@ function detailToFormValues(d) {
 }
 
 function escapeHtml(s) {
-    return s.replace(/[&<>]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]));
+    return String(s == null ? '' : s).replace(/[&<>]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]));
 }
 function escapeAttr(s) {
-    return s.replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+    return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
 }
 """
 
@@ -851,12 +868,12 @@ async function runEditModalSearch() {
     }
     list.innerHTML = results.map((r, i) => `
         <div class="search-result-row" onclick="pickEditModalResult(${i})">
-            ${r.cover_url ? `<img class="result-cover" src="${r.cover_url}" alt="">` : `<div class="result-cover"></div>`}
+            ${r.cover_url ? `<img class="result-cover" src="${escapeAttr(r.cover_url)}" alt="">` : `<div class="result-cover"></div>`}
             <div class="result-info">
-                <div class="result-title">${r.title}</div>
-                <div class="result-meta">${r.author || 'Unknown author'}${r.date ? ' • ' + r.date.slice(0, 4) : ''}</div>
+                <div class="result-title">${escapeHtml(r.title)}</div>
+                <div class="result-meta">${escapeHtml(r.author || 'Unknown author')}${r.date ? ' • ' + escapeHtml(r.date.slice(0, 4)) : ''}</div>
             </div>
-            <span class="result-source">${r.source}</span>
+            <span class="result-source">${escapeHtml(r.source)}</span>
         </div>
     `).join('');
 }
@@ -990,12 +1007,19 @@ makeModalDraggable('editModalOverlay');
 """
 
 def render_year_page(year: int, releases: list, years: list, initial_month: int) -> str:
+    # year/initial_month are always ints from Flask's <int:year> route
+    # converter, but this page interpolates them straight into HTML
+    # below (in the <title>/<h1>), so re-assert that explicitly here
+    # rather than trusting the caller -- an int can never carry HTML/JS,
+    # so this is a genuine sanitizer, not just a formality.
+    year = int(year)
+    initial_month = int(initial_month)
     months_present = sorted({int(r['date'][5:7]) for r in releases}) or [initial_month]
     if initial_month not in months_present:
         initial_month = months_present[0]
 
-    data_json = json.dumps(releases)
-    years_json = json.dumps(years)
+    data_json = _safe_json_for_script(releases)
+    years_json = _safe_json_for_script(years)
 
     return f"""<!doctype html>
 <html lang="en">
@@ -1261,10 +1285,10 @@ function render() {{
         if (r.audiobook) badges += `<span class="format-badge audiobook">Audiobook</span>`;
         html += `<tr class="${{r.starred ? 'starred-row' : ''}}" id="row-${{r.id}}">
             <td class="col-star no-label"><button class="star-btn ${{r.starred ? 'on' : ''}}" onclick="toggleStar('${{r.slug}}')">${{STAR_SVG}}</button></td>
-            <td class="col-date" data-label="Date">${{r.date}}</td>
-            <td class="col-title no-label">${{r.title}}</td>
-            <td class="col-vol" data-label="Vol"><a class="volume-link" href="${{r.url || '#'}}" target="_blank" rel="noopener noreferrer">${{r.volume || ''}}</a></td>
-            <td class="col-publisher" data-label="Publisher">${{r.publisher || ''}}</td>
+            <td class="col-date" data-label="Date">${{escapeHtml(r.date)}}</td>
+            <td class="col-title no-label">${{escapeHtml(r.title)}}</td>
+            <td class="col-vol" data-label="Vol"><a class="volume-link" href="${{escapeAttr(r.url || '#')}}" target="_blank" rel="noopener noreferrer">${{escapeHtml(r.volume || '')}}</a></td>
+            <td class="col-publisher" data-label="Publisher">${{escapeHtml(r.publisher || '')}}</td>
             <td class="col-format" data-label="Format">${{badges}}</td>
         </tr>`;
     }}
@@ -1290,8 +1314,8 @@ function renderSearchResults() {{
         lastSearchResults.map((r, i) => `
             <div class="result ${{i === kbIndex ? 'kb-active' : ''}}" data-idx="${{i}}">
                 <button class="r-star ${{r.starred ? 'on' : ''}}" onclick="event.stopPropagation(); toggleStar('${{r.slug}}')">${{STAR_SVG}}</button>
-                <span class="r-text">${{r.title}}${{r.volume ? ' (vol ' + r.volume + ')' : ''}} — ${{r.publisher || ''}}${{r.source === 'manual' ? ' <em style="color:var(--accent);font-style:normal;">✎ edit</em>' : ''}}</span>
-                <span class="r-year">${{r.date}}</span>
+                <span class="r-text">${{escapeHtml(r.title)}}${{r.volume ? ' (vol ' + escapeHtml(r.volume) + ')' : ''}} — ${{escapeHtml(r.publisher || '')}}${{r.source === 'manual' ? ' <em style="color:var(--accent);font-style:normal;">✎ edit</em>' : ''}}</span>
+                <span class="r-year">${{escapeHtml(r.date)}}</span>
             </div>
         `).join('');
     searchResults.querySelectorAll('.result[data-idx]').forEach(el => {{
@@ -1383,7 +1407,7 @@ def render_starred_page(releases: list) -> str:
     across all years -- the actual 'track all my starred books' view.
     Collapsible per-series accordion, its own search box, and a reading
     status picker at both series and volume level."""
-    data_json = json.dumps(releases)
+    data_json = _safe_json_for_script(releases)
 
     return f"""<!doctype html>
 <html lang="en">
@@ -1544,7 +1568,7 @@ def render_add_page(recent: list) -> str:
     field grid used for editing an existing book, then add it to
     ★ My Starred. Recently-added items are listed below for quick
     status changes or undo."""
-    recent_json = json.dumps(recent)
+    recent_json = _safe_json_for_script(recent)
 
     return f"""<!doctype html>
 <html lang="en">
@@ -1695,12 +1719,12 @@ async function runAddSearch() {{
     }}
     list.innerHTML = results.map((r, i) => `
         <div class="search-result-row" onclick="pickAddResult(${{i}})">
-            ${{r.cover_url ? `<img class="result-cover" src="${{r.cover_url}}" alt="">` : `<div class="result-cover"></div>`}}
+            ${{r.cover_url ? `<img class="result-cover" src="${{escapeAttr(r.cover_url)}}" alt="">` : `<div class="result-cover"></div>`}}
             <div class="result-info">
-                <div class="result-title">${{r.title}}</div>
-                <div class="result-meta">${{r.author || 'Unknown author'}}${{r.date ? ' • ' + r.date.slice(0, 4) : ''}}</div>
+                <div class="result-title">${{escapeHtml(r.title)}}</div>
+                <div class="result-meta">${{escapeHtml(r.author || 'Unknown author')}}${{r.date ? ' • ' + escapeHtml(r.date.slice(0, 4)) : ''}}</div>
             </div>
-            <span class="result-source">${{r.source}}</span>
+            <span class="result-source">${{escapeHtml(r.source)}}</span>
         </div>
     `).join('');
     window._addSearchResults = results;
@@ -1803,10 +1827,10 @@ function renderRecentList() {{
     }}
     list.innerHTML = recentItems.map(r => `
         <div class="recent-item-row">
-            ${{r.cover_url ? `<img class="result-cover" src="${{r.cover_url}}" alt="">` : `<div class="result-cover"></div>`}}
+            ${{r.cover_url ? `<img class="result-cover" src="${{escapeAttr(r.cover_url)}}" alt="">` : `<div class="result-cover"></div>`}}
             <div class="result-info" onclick="openEditModal(${{r.id}})">
-                <div class="result-title">${{r.title}}</div>
-                <div class="result-meta">${{r.author || ''}}${{r.series_title ? ' • Series: ' + r.series_title + (r.volume ? ' #' + r.volume : '') : ''}}</div>
+                <div class="result-title">${{escapeHtml(r.title)}}</div>
+                <div class="result-meta">${{escapeHtml(r.author || '')}}${{r.series_title ? ' • Series: ' + escapeHtml(r.series_title) + (r.volume ? ' #' + escapeHtml(r.volume) : '') : ''}}</div>
             </div>
             <div class="recent-item-controls">
                 ${{statusPickerHTML('volume', r.id, r.status || 'to_read')}}
@@ -1869,8 +1893,8 @@ function renderLibraryResults() {{
         libraryResults.map((r, i) => `
             <div class="result ${{i === libraryKbIndex ? 'kb-active' : ''}}" data-idx="${{i}}">
                 <span style="width:1.1rem;flex-shrink:0;color:var(--accent);">${{r.starred ? '★' : ''}}</span>
-                <span class="r-text">${{r.title}}${{r.volume ? ' (vol ' + r.volume + ')' : ''}} — ${{r.publisher || ''}}${{r.source === 'manual' ? ' <em style="color:var(--accent);font-style:normal;">✎ edit</em>' : ''}}</span>
-                <span class="r-year">${{r.date}}</span>
+                <span class="r-text">${{escapeHtml(r.title)}}${{r.volume ? ' (vol ' + escapeHtml(r.volume) + ')' : ''}} — ${{escapeHtml(r.publisher || '')}}${{r.source === 'manual' ? ' <em style="color:var(--accent);font-style:normal;">✎ edit</em>' : ''}}</span>
+                <span class="r-year">${{escapeHtml(r.date)}}</span>
             </div>
         `).join('');
     librarySearchResults.querySelectorAll('.result[data-idx]').forEach(el => {{

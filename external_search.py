@@ -56,16 +56,26 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 import time
 import json
 import html as _html
 from typing import Dict, List, Any, Optional
+from urllib.parse import urlparse
 
 import requests
 
 REQUEST_TIMEOUT = 8
 USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 BookTracker/2026.08.05-01")
+
+# Caps how much of a fetched page's HTML the scraping regexes below ever
+# scan. Amazon's actual product markup we care about is always near the
+# top of the page, well under this -- the cap exists purely so a page
+# that returns pathologically large or malformed HTML (whether by
+# accident or by a malicious server) can't make regex matching take an
+# unbounded amount of time.
+MAX_SCRAPED_HTML_CHARS = 1_500_000
 
 GOOGLE_BOOKS_API_KEY = os.environ.get("GOOGLE_BOOKS_API_KEY", "").strip()
 HARDCOVER_API_TOKEN = os.environ.get("HARDCOVER_API_TOKEN", "").strip()
@@ -75,6 +85,17 @@ class ExternalSearchError(Exception):
     """Raised when a request to an external source fails outright.
     Callers generally catch this per-source so one flaky API doesn't
     sink a combined search."""
+
+
+def _redact_url(url: str) -> str:
+    """The URL with any query string stripped -- safe to put in a
+    message shown to the end user. A full URL (including one of ours)
+    can carry a credential in the query string -- e.g. Google Books'
+    optional `key=...` param -- so error text shown to the browser must
+    never include it. requests/urllib3 exception messages often embed
+    the full request URL too, which is why the except blocks below
+    build their own message instead of including str(e) verbatim."""
+    return url.split("?", 1)[0]
 
 
 def _get(url: str, params: Optional[dict] = None, as_json: bool = True, retries: int = 2) -> Any:
@@ -90,7 +111,7 @@ def _get(url: str, params: Optional[dict] = None, as_json: bool = True, retries:
                 # only light traffic -- worth a couple of short-backoff
                 # retries before giving up, since it's often a burst
                 # limit rather than a hard daily one.
-                last_error = requests.HTTPError(f"429 rate-limited by {url.split('?')[0]}")
+                last_error = requests.HTTPError(f"429 rate-limited by {_redact_url(url)}")
                 if attempt < retries:
                     time.sleep(0.6 * (attempt + 1))
                     continue
@@ -106,14 +127,32 @@ def _get(url: str, params: Optional[dict] = None, as_json: bool = True, retries:
             if resp is not None and getattr(resp, "status_code", None) in (500, 502, 503, 504) and attempt < retries:
                 time.sleep(0.5 * (attempt + 1))
                 continue
-            raise ExternalSearchError(f"request to {url} failed: {e}") from e
-    raise ExternalSearchError(f"request to {url} failed: {last_error}")
+            # Full exception detail (which can include the request URL,
+            # and therefore any API key in its query string) is logged
+            # server-side only -- never included in the message that
+            # gets sent back to the browser.
+            print(f"[external_search] GET {_redact_url(url)} failed: {e}", file=sys.stderr)
+            raise ExternalSearchError(
+                f"Request to {_redact_url(url)} failed ({type(e).__name__}). "
+                "The source may be temporarily unavailable -- try again in a moment."
+            ) from e
+    print(f"[external_search] GET {_redact_url(url)} failed: {last_error}", file=sys.stderr)
+    raise ExternalSearchError(
+        f"Request to {_redact_url(url)} failed"
+        f"{f' ({type(last_error).__name__})' if last_error else ''}. "
+        "The source may be temporarily unavailable -- try again in a moment."
+    )
 
 
 def _strip_html(text: Optional[str]) -> Optional[str]:
     if not text:
         return None
-    text = re.sub(r"<[^>]+>", " ", text)
+    # Excluding '<' as well as '>' from the "content" class (not just
+    # '>') removes the ambiguity that makes this pattern's worst-case
+    # matching time scale with input length: with only '>' excluded, a
+    # run of unmatched '<' characters gives the regex engine many ways
+    # to (mis)pair "start tag" attempts before backtracking out of each.
+    text = re.sub(r"<[^<>]+>", " ", text)
     text = _html.unescape(text)
     return re.sub(r"\s+", " ", text).strip() or None
 
@@ -182,31 +221,38 @@ def looks_like_asin(text: str) -> bool:
     return bool(_ASIN_RE.match((text or "").strip()))
 
 
+# Book titles/subtitles/series-field strings are inherently short (a
+# title is realistically under a couple hundred characters), but
+# nothing enforces that upstream -- capping defensively here bounds the
+# worst-case cost of the regexes below to a small constant regardless
+# of how long a string an API ever hands back.
+_MAX_SERIES_TEXT_CHARS = 400
+
 # Matches the "((Series Name, Book N))" / "(Series Name #N)" convention
 # Open Library uses on many edition titles, and reused for Google Books
 # subtitles like "Artemis Fowl, Book 2".
 _SERIES_TITLE_RE = re.compile(
-    r"\(+\s*([^,#()]+?)\s*,?\s*(?:book|vol\.?|volume|#)\s*(\d+(?:\.\d+)?)\s*\)+",
+    r"\(+([^,#()]*?)[\s,]*(?:book|vol\.?|volume|#)\s*(\d+(?:\.\d+)?)\s*\)+",
     re.IGNORECASE,
 )
 # Matches Open Library's dedicated `series` bib field, e.g.
 # "Dresden files ; bk. 1" or "The Expanse ; 3".
 _SERIES_FIELD_RE = re.compile(
-    r"^(.*?)\s*;\s*(?:bk\.?|book|vol\.?|volume)?\s*#?\s*(\d+(?:\.\d+)?)",
+    r"^([^;]*?)\s*;\s*(?:bk\.?|book|vol\.?|volume)?\s*#?\s*(\d+(?:\.\d+)?)",
     re.IGNORECASE,
 )
 # "Artemis Fowl, Book 2" / "Ranger's Apprentice Book 2" / "Mistborn Vol. 2"
 _SERIES_COMMA_RE = re.compile(
-    r"^(.*?)[,:]?\s+(?:book|bk\.?|vol\.?|volume|no\.?)\s*#?\s*(\d+(?:\.\d+)?)\s*$",
+    r"^([^,:]*?)[,:]?\s+(?:book|bk\.?|vol\.?|volume|no\.?)\s*#?\s*(\d+(?:\.\d+)?)\s*$",
     re.IGNORECASE,
 )
 # "Book 2 of the Dresden Files" / "Book 2 of Mistborn"
 _BOOK_OF_RE = re.compile(
-    r"^(?:book|bk\.?|vol\.?|volume)\s*#?\s*(\d+(?:\.\d+)?)\s+of\s+(?:the\s+)?(.+?)\s*(?:series)?$",
+    r"^(?:book|bk\.?|vol\.?|volume)\s*#?\s*(\d+(?:\.\d+)?)\s+of\s+(?:the\s+)?([^()]+?)\s*(?:series)?$",
     re.IGNORECASE,
 )
 # "Dresden Files #2" / "Mistborn Series #2"
-_HASH_RE = re.compile(r"^(.*?)\s*#\s*(\d+(?:\.\d+)?)\s*$")
+_HASH_RE = re.compile(r"^([^#]*?)\s*#\s*(\d+(?:\.\d+)?)\s*$")
 
 
 def _extract_series_from_text(*texts: Optional[str]):
@@ -215,7 +261,7 @@ def _extract_series_from_text(*texts: Optional[str]):
     Tries several conventions publishers/catalogs commonly use. Returns
     (series_title, series_volume), either of which may be None."""
     for text in texts:
-        text = (text or "").strip()
+        text = (text or "").strip()[:_MAX_SERIES_TEXT_CHARS]
         if not text:
             continue
         m = _SERIES_TITLE_RE.search(text)
@@ -409,12 +455,12 @@ def get_open_library_detail(work_key: str) -> Dict[str, Any]:
         editions = {"entries": []}
     for ed in editions.get("entries", []):
         if series_title is None:
-            m = _SERIES_TITLE_RE.search(ed.get("title", "") or "")
+            m = _SERIES_TITLE_RE.search((ed.get("title", "") or "")[:_MAX_SERIES_TEXT_CHARS])
             if m:
                 series_title, series_volume = m.group(1).strip(), m.group(2)
             else:
                 for s in ed.get("series", []) or []:
-                    m2 = _SERIES_FIELD_RE.match(s)
+                    m2 = _SERIES_FIELD_RE.match((s or "")[:_MAX_SERIES_TEXT_CHARS])
                     if m2:
                         series_title, series_volume = m2.group(1).strip(), m2.group(2)
                         break
@@ -557,10 +603,21 @@ def _hardcover_graphql(query: str, variables: Optional[dict] = None) -> Dict[str
         )
         resp.raise_for_status()
     except requests.RequestException as e:
-        raise ExternalSearchError(f"Hardcover request failed: {e}") from e
+        # Full detail (which for some requests/urllib3 error types can
+        # include request internals) goes to the server log only.
+        print(f"[external_search] Hardcover request failed: {e}", file=sys.stderr)
+        raise ExternalSearchError(
+            f"Hardcover request failed ({type(e).__name__}). "
+            "Hardcover may be temporarily unavailable -- try again in a moment."
+        ) from e
     payload = resp.json()
     if payload.get("errors"):
-        msg = payload["errors"][0].get("message", str(payload["errors"]))
+        # Hardcover's own GraphQL error messages are safe to surface --
+        # they're curated API-schema errors (e.g. "field 'foo' not found
+        # on type 'books'"), not exception/stack-trace text, and the
+        # README specifically documents seeing these as expected
+        # behavior when Hardcover's schema drifts.
+        msg = payload["errors"][0].get("message", "unknown error")
         raise ExternalSearchError(f"Hardcover API error: {msg}")
     return payload.get("data") or {}
 
@@ -783,6 +840,36 @@ _URL_PATTERNS = [
     ("openlibrary", re.compile(r"openlibrary\.org(/works/OL\w+W)", re.IGNORECASE)),
 ]
 
+# Only "amazon" ever triggers a live request to the *pasted* URL itself
+# (fetch_amazon_product below) -- every other source just extracts an ID
+# and looks it up against that source's own hardcoded API base URL, so
+# the pasted URL's host doesn't matter for them. For amazon specifically,
+# the pattern above is a substring search (re.search), not anchored to
+# the actual host -- on its own that would let someone paste a URL like
+# "http://internal-host/whatever?x=amazon.com/dp/B000000000" and have it
+# treated as a legitimate Amazon link, at which point the raw pasted URL
+# (not a reconstructed amazon.com one) gets fetched with requests.get.
+# That's a server-side request forgery hole: the server can be made to
+# issue a request to *any* host the caller names, including internal-
+# only addresses. _is_amazon_url below closes that by checking the
+# request's actual parsed host, not just whether "amazon.<tld>" appears
+# somewhere in the string.
+_AMAZON_HOST_RE = re.compile(r"^([a-z0-9-]+\.)*amazon\.[a-z]{2,3}(\.[a-z]{2,3})?$", re.IGNORECASE)
+
+
+def _is_amazon_url(url: str) -> bool:
+    """True only if url is an http(s) URL whose actual host is
+    amazon.<tld> (or a subdomain of it) -- not merely a URL that
+    contains that text somewhere in its path or query string."""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = parsed.hostname or ""
+    return bool(_AMAZON_HOST_RE.match(host))
+
 
 def parse_product_url(url: str) -> Dict[str, Optional[str]]:
     """Recognize a product URL and pull out (kind, source, external_id)
@@ -790,6 +877,11 @@ def parse_product_url(url: str) -> Dict[str, Optional[str]]:
     'audiobook'; source distinguishes which API external_id belongs to."""
     url = (url or "").strip()
     for name, pattern in _URL_PATTERNS:
+        if name == "amazon" and not _is_amazon_url(url):
+            # Don't even extract an ID for a string that merely contains
+            # "amazon.com/dp/..." somewhere but isn't actually hosted on
+            # Amazon -- see _is_amazon_url for why.
+            continue
         m = pattern.search(url)
         if not m:
             continue
@@ -814,7 +906,7 @@ _OG_TAG_RE = re.compile(
 _META_NAME_RE = re.compile(
     r'<meta[^>]+name=["\'](author|book:author)["\'][^>]+content=["\']([^"\']+)["\']', re.IGNORECASE)
 _TITLE_TAG_RE = re.compile(r"<title>([^<]+)</title>", re.IGNORECASE)
-_PRODUCT_TITLE_RE = re.compile(r"""id=["']productTitle["'][^>]*>\s*([^<]+?)\s*<""", re.IGNORECASE)
+_PRODUCT_TITLE_RE = re.compile(r"""id=["']productTitle["'][^>]*>([^<]+?)<""", re.IGNORECASE)
 _BYLINE_RE = re.compile(r"""id=["']bylineInfo["'][^>]*>(.*?)</div>""", re.IGNORECASE | re.DOTALL)
 _BYLINE_LINK_RE = re.compile(r'>\s*([^<]{2,80}?)\s*</a>', re.IGNORECASE)
 # data-a-dynamic-image holds a JSON object (double-quoted keys), so it's
@@ -823,14 +915,25 @@ _BYLINE_LINK_RE = re.compile(r'>\s*([^<]{2,80}?)\s*</a>', re.IGNORECASE)
 _DYNAMIC_IMAGE_SQ_RE = re.compile(r"data-a-dynamic-image='([^']+)'", re.IGNORECASE)
 _DYNAMIC_IMAGE_DQ_RE = re.compile(r'data-a-dynamic-image="([^"]+)"', re.IGNORECASE)
 _LANDING_IMG_SRC_RE = re.compile(r"""id=["'](?:landingImage|imgBlkFront)["'][^>]+src=["']([^"']+)["']""", re.IGNORECASE)
-_SERIES_LINK_RE = re.compile(r"""id=["']seriesTitleLink["'][^>]*>\s*([^<]+?)\s*<""", re.IGNORECASE)
+_SERIES_LINK_RE = re.compile(r"""id=["']seriesTitleLink["'][^>]*>([^<]+?)<""", re.IGNORECASE)
 _SERIES_BOOK_OF_N_RE = re.compile(r"Book\s+(\d+(?:\.\d+)?)\s+of\s+\d+\s*:?\s*(.+)", re.IGNORECASE)
 # "Publisher : Simon & Schuster (April 1, 2020)" / classic detail-bullet
 # and the newer detailBullets_feature_div table, both label: value pairs.
+# Both patterns previously had \s* immediately bordering the lazy
+# content groups on both sides -- since \s* and a lazy "not this
+# delimiter" group can match the same whitespace characters, that's
+# ambiguous in the way that causes worst-case matching time to grow
+# with input length. Dropping those (both groups already get
+# .strip()'d by the caller below, so nothing is lost) removes most of
+# it, but [\s:]* directly after the label group is the same shape all
+# over again (both it and the group can match plain whitespace) --
+# bounding it to a small fixed max closes that off too, since a
+# label's trailing ": " separator is never more than a couple of
+# characters in real markup.
 _DETAIL_BULLET_RE = re.compile(
-    r'<span class="a-text-bold">\s*([^:<]+?)\s*:?\s*</span>\s*<span[^>]*>\s*([^<]+?)\s*</span>', re.IGNORECASE)
+    r'<span class="a-text-bold">([^:<]+?)[\s:]{0,5}</span>\s*<span[^>]*>([^<]+?)</span>', re.IGNORECASE)
 _DETAIL_TABLE_RE = re.compile(
-    r'<th[^>]*>\s*([^<]+?)\s*</th>\s*<td[^>]*>\s*([^<]+?)\s*</td>', re.IGNORECASE)
+    r'<th[^>]*>([^<]+?)</th>\s*<td[^>]*>([^<]+?)</td>', re.IGNORECASE)
 _ISBN13_RE = re.compile(r"\b97[89][\d-]{10,17}\b")
 _BOT_CHECK_MARKERS = (
     "Enter the characters you see below", "api-services-support@amazon.com",
@@ -841,14 +944,26 @@ _BOT_CHECK_MARKERS = (
 # actual book title.
 _AMAZON_TITLE_SUFFIX_RE = re.compile(
     r"\s*[-:(]\s*(Kindle Edition|Kindle eBook|Kindle|Audible Audio Edition|Audiobook|"
-    r"Paperback|Hardcover|Mass Market Paperback|Amazon\.com.*)?\s*$", re.IGNORECASE)
+    # Amazon.com.* was previously unbounded (.*), which sits directly
+    # against the \s*$ that follows it -- since '.' also matches
+    # whitespace, that pair of adjacent quantifiers is exactly the
+    # ambiguous shape that makes worst-case matching time scale with
+    # input length. Capping it at a fixed max length removes that: the
+    # trailing junk this branch matches ("Amazon.com: Books" and
+    # similar) is never long, so nothing legitimate is lost.
+    r"Paperback|Hardcover|Mass Market Paperback|Amazon\.com.{0,60})?\s*$", re.IGNORECASE)
 _AMAZON_TITLE_PREFIX_RE = re.compile(r"^Amazon\.[a-z.]+\s*:\s*", re.IGNORECASE)
+
+# Titles are always short in practice; bounding defensively here (same
+# rationale as _MAX_SERIES_TEXT_CHARS above) keeps worst-case regex
+# cost constant even if a page ever hands back something pathological.
+_MAX_TITLE_CHARS = 500
 
 
 def _clean_amazon_title(title: Optional[str]) -> Optional[str]:
     if not title:
         return None
-    title = _html.unescape(title).strip()
+    title = _html.unescape(title).strip()[:_MAX_TITLE_CHARS]
     title = _AMAZON_TITLE_PREFIX_RE.sub("", title).strip()
     # Repeated pass: Amazon sometimes stacks more than one suffix, e.g.
     # "Foo - Kindle Edition: Amazon.com: Books".
@@ -911,6 +1026,13 @@ def fetch_amazon_product(url: str, asin: str) -> Dict[str, Any]:
         "publisher": None, "language": None, "isbn": None, "date": None, "series_title": None,
         "series_volume": None, "cover_url": None, "url": url, "warning": None,
     }
+    if not _is_amazon_url(url):
+        # Defense in depth: parse_product_url already checks this before
+        # ever calling here, but this function makes a live outbound
+        # request with a caller-supplied URL, so it re-checks on its own
+        # rather than trusting callers not to regress that check later.
+        result["warning"] = "That doesn't look like an Amazon product URL; fill in details manually."
+        return result
     try:
         resp = requests.get(url, timeout=REQUEST_TIMEOUT, headers={
             "User-Agent": USER_AGENT,
@@ -918,14 +1040,14 @@ def fetch_amazon_product(url: str, asin: str) -> Dict[str, Any]:
             "Accept-Language": "en-US,en;q=0.9",
         })
         resp.raise_for_status()
-        html_text = resp.text
+        html_text = resp.text[:MAX_SCRAPED_HTML_CHARS]
         # Normalize non-breaking-space entities to regular spaces before
         # any regex runs -- Amazon's label:value bullets/table cells
         # commonly separate label from value with "&nbsp;:&nbsp;" rather
         # than a literal space, which \s* alone won't match.
         html_text = re.sub(r"&nbsp;|&#160;|&#xa0;", " ", html_text, flags=re.IGNORECASE)
-    except requests.RequestException as e:
-        result["warning"] = f"Couldn't fetch the Amazon page ({e}); fill in details manually."
+    except requests.RequestException:
+        result["warning"] = "Couldn't fetch the Amazon page; fill in details manually."
         return result
 
     if any(marker in html_text for marker in _BOT_CHECK_MARKERS):
