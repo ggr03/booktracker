@@ -6,4 +6,4 @@ set -euo pipefail
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PY="$APP_DIR/venv/bin/python"
 [ -x "$PY" ] || PY="$(command -v python3)"
-"$PY" "$APP_DIR/app.py" uninstall-service
+"$PY" "$APP_DIR/BookTrackerApp.py" uninstall-service

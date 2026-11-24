@@ -4,18 +4,18 @@ Book Tracker -- local web app for tracking light novel releases
 add yourself from Google Books, Open Library, Audible/Audnexus, or an
 Amazon product URL.
 
-    python app.py sync              # fetch books.csv, upsert into SQLite (diff-only)
-    python app.py serve             # start the web server (default: http://127.0.0.1:7077)
-    python app.py serve --lan       # ...reachable from other devices on your network
-    python app.py paths             # show where the DB, config and logs live on this OS
-    python app.py init-config       # create a private config.ini for API tokens/settings
-    python app.py install-service   # start automatically at login (systemd/launchd/Windows)
-    python app.py uninstall-service
-    python app.py --version         # print the version string and exit
+    python BookTrackerApp.py sync              # fetch books.csv, upsert into SQLite (diff-only)
+    python BookTrackerApp.py serve             # start the web server (default: http://127.0.0.1:7077)
+    python BookTrackerApp.py serve --lan       # ...reachable from other devices on your network
+    python BookTrackerApp.py paths             # show where the DB, config and logs live on this OS
+    python BookTrackerApp.py init-config       # create a private config.ini for API tokens/settings
+    python BookTrackerApp.py install-service   # start automatically at login (systemd/launchd/Windows)
+    python BookTrackerApp.py uninstall-service
+    python BookTrackerApp.py --version         # print the version string and exit
 
 Runs the same on Linux (Debian/Ubuntu/MX, RHEL/Rocky/Alma/Fedora),
-macOS, and Windows; see config.py for per-OS file locations and
-service.py for the per-OS autostart integration.
+macOS, and Windows; see BookTrackerCfg.py for per-OS file locations and
+BookTrackerService.py for the per-OS autostart integration.
 
 Star clicks POST straight to this server, which writes to SQLite -- that's
 why this needs to be a running server rather than a static HTML file.
@@ -29,8 +29,12 @@ if sys.version_info < (3, 11):
              "See README.md > Setup for how to install it on your OS.")
 
 import argparse
+import atexit
 import datetime
 import ipaddress
+import os
+import platform
+import signal
 import socket
 import threading
 import time
@@ -40,11 +44,12 @@ from urllib.parse import urlparse
 import requests
 from flask import Flask, jsonify, redirect, request, abort
 
-import config
-import db
-import external_search
-import template
-from version import APP_NAME, VERSION
+import BookTrackerCfg as config
+import BookTrackerDB as db
+import BookTrackerLogs as logs
+import BookTrackerSearch as external_search
+import BookTrackerTemplate as template
+from BookTrackerVer import APP_NAME, VERSION
 
 app = Flask(__name__)
 # Global request-body cap. Nothing in this app legitimately needs more
@@ -61,6 +66,60 @@ MAX_CSV_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB
 
 DB_PATH = db.DEFAULT_DB_PATH
 DEFAULT_PORT = 7077
+
+
+# ---------------------------------------------------------------------
+# Activity-log helpers (see BookTrackerLogs.py for the files).
+# ---------------------------------------------------------------------
+
+def _q(value, limit: int = 200) -> str:
+    """A value made safe for a one-line log entry: quoted, newlines
+    escaped (so user-supplied text can't forge extra log lines), capped."""
+    text = "" if value is None else str(value)
+    text = text.replace("\\", "\\\\").replace("\r", "\\r").replace("\n", "\\n")
+    if len(text) > limit:
+        text = text[:limit] + "..."
+    return f'"{text}"'
+
+
+def _series_label(slug: str) -> str:
+    try:
+        conn = db.get_conn(DB_PATH)
+        try:
+            row = conn.execute(
+                "SELECT COALESCE(series_title, title) AS t FROM releases WHERE slug = ? "
+                "ORDER BY date LIMIT 1", (slug,)).fetchone()
+        finally:
+            conn.close()
+        return f"{_q(row['t'])} [{slug}]" if row else f"[{slug}]"
+    except Exception:
+        return f"[{slug}]"
+
+
+def _release_label(release_id: int) -> str:
+    try:
+        row = db.get_release(int(release_id), db_path=DB_PATH)
+    except Exception:
+        row = None
+    if not row:
+        return f"release #{release_id}"
+    vol = f" vol {row['volume']}" if row.get("volume") else ""
+    return f"{_q(row.get('title'))}{vol} (release #{release_id})"
+
+
+def _imported_label(book_id: int) -> str:
+    try:
+        conn = db.get_conn(DB_PATH)
+        try:
+            row = conn.execute("SELECT title, author FROM imported_books WHERE id = ?",
+                               (book_id,)).fetchone()
+        finally:
+            conn.close()
+        if row:
+            return f"{_q(row['title'])} by {_q(row['author'])} (#{book_id})"
+    except Exception:
+        pass
+    return f"book #{book_id}"
 
 
 # ---------------------------------------------------------------------
@@ -132,13 +191,14 @@ def _external_error_response(e: "external_search.ExternalSearchError", status: i
 
     ExternalSearchError's message is deliberately curated, user-facing
     text (rate-limit hints, "isn't configured" notices, etc.) -- see
-    external_search.py, where every raise site builds that text itself
+    BookTrackerSearch.py, where every raise site builds that text itself
     rather than embedding a raw exception or a URL that might carry a
     credential in its query string. So returning it to the browser here
     is intentional and safe, not a stack-trace leak. Logging it
     server-side too just keeps a record for anyone tailing the process.
     """
     app.logger.warning("external_search error: %s", e)
+    logs.warning("External lookup failed (%s %s): %s", request.method, request.path, e)
     return jsonify({"error": str(e)}), status
 
 
@@ -146,7 +206,7 @@ def _external_error_response(e: "external_search.ExternalSearchError", status: i
 def index():
     years = db.get_years(db_path=DB_PATH)
     if not years:
-        return "No data yet. Run: python app.py sync", 500
+        return "No data yet. Run: python BookTrackerApp.py sync", 500
     today_year = datetime.date.today().year
     if today_year in years:
         target = today_year
@@ -186,7 +246,7 @@ def add_page():
 # ---------------------------------------------------------------------
 # "My Books" -- imported from a Goodreads-format CSV. Kept deliberately
 # separate from `releases`/`stars`; the same book may legitimately exist
-# in both places. See db.py's imported_books section for the storage
+# in both places. See BookTrackerDB.py's imported_books section for the storage
 # details.
 # ---------------------------------------------------------------------
 
@@ -215,6 +275,8 @@ def api_import_books_csv():
     # in full. If we got MAX+1 bytes back, the file is too big.
     raw = f.read(MAX_CSV_UPLOAD_BYTES + 1)
     if len(raw) > MAX_CSV_UPLOAD_BYTES:
+        logs.my_books("IMPORT REJECTED %s: file larger than %d MB", _q(f.filename),
+                      MAX_CSV_UPLOAD_BYTES // (1024 * 1024))
         abort(413, f"CSV file too large (max {MAX_CSV_UPLOAD_BYTES // (1024 * 1024)} MB)")
 
     try:
@@ -233,17 +295,24 @@ def api_import_books_csv():
         # would have raised is discarded here in favour of a fixed,
         # user-friendly one, so no user-controlled text can end up in
         # the response.
+        logs.my_books("IMPORT REJECTED %s: empty or missing a Title column", _q(f.filename))
         abort(400, "CSV is empty or missing a Title column")
 
     result = db.add_imported_books(rows, db_path=DB_PATH)
     result["warnings"] = warnings
     result["skipped_rows"] = skipped_rows
+    logs.my_books("IMPORT %s: %d rows read, %d added, %d already in My Books, "
+                  "%d unreadable rows skipped, %d warnings",
+                  _q(f.filename), len(rows), result.get("added", 0), result.get("skipped", 0),
+                  len(skipped_rows) if isinstance(skipped_rows, (list, tuple)) else (skipped_rows or 0),
+                  len(warnings) if isinstance(warnings, (list, tuple)) else 0)
     return jsonify(result)
 
 
 @app.route("/api/imported_book/<int:book_id>/update", methods=["POST"])
 def api_update_imported_book(book_id: int):
     body = request.get_json(silent=True) or {}
+    label = _imported_label(book_id)
     try:
         row = db.update_imported_book(book_id, body, db_path=DB_PATH)
     except KeyError:
@@ -254,15 +323,19 @@ def api_update_imported_book(book_id: int):
         # Validation/duplicate errors -- fixed message, no leaked
         # exception text.
         abort(400, "Invalid update — check the date format (YYYY-MM-DD) and try again")
+    changes = ", ".join(f"{k}={_q(v, 60)}" for k, v in sorted(body.items()) if isinstance(k, str))
+    logs.my_books("EDITED %s: %s", label, changes or "(no fields)")
     return jsonify(row)
 
 
 @app.route("/api/imported_book/<int:book_id>/remove", methods=["POST"])
 def api_remove_imported_book(book_id: int):
+    label = _imported_label(book_id)
     try:
         db.remove_imported_book(book_id, db_path=DB_PATH)
     except ValueError:
         abort(404, "No book with that id")
+    logs.my_books("REMOVED %s", label)
     return jsonify({"removed": book_id})
 
 
@@ -290,6 +363,7 @@ def api_star():
     if not slug:
         abort(400, "slug is required")
     starred = db.toggle_star(slug, db_path=DB_PATH)
+    logs.starred_update("%s %s", "STARRED" if starred else "UNSTARRED", _series_label(slug))
     return jsonify({"slug": slug, "starred": starred})
 
 
@@ -304,6 +378,7 @@ def api_volume_status():
         changed = db.set_volume_status(int(release_id), status, db_path=DB_PATH)
     except ValueError as e:
         abort(400, str(e))
+    logs.starred_update("STATUS %s -> %s", _release_label(release_id), status)
     return jsonify({"changed": changed})
 
 
@@ -315,6 +390,8 @@ def api_series_status():
     if not slug or status not in db.STATUSES:
         abort(400, f"slug and a valid status ({db.STATUSES}) are required")
     changed = db.set_series_status(slug, status, db_path=DB_PATH)
+    logs.starred_update("SERIES STATUS %s -> %s (%d volumes)", _series_label(slug), status,
+                        len(changed) if isinstance(changed, list) else 0)
     return jsonify({"changed": changed})
 
 
@@ -329,6 +406,7 @@ def api_series_format_pref():
         result = db.set_series_format_pref(slug, formats, db_path=DB_PATH)
     except ValueError as e:
         abort(400, str(e))
+    logs.starred_update("FORMATS %s -> %s", _series_label(slug), ", ".join(result) or "(none)")
     return jsonify({"slug": slug, "formats": result})
 
 
@@ -449,6 +527,13 @@ def api_external_add():
         "status": volume.get("status") if volume.get("status") in db.STATUSES else db.DEFAULT_STATUS,
     }
     result = db.add_manual_entries([entry], db_path=DB_PATH)
+    fmt_list = [k for k in ("ebook", "print", "audiobook") if entry[k]] or ["(none)"]
+    series = f" | series {_q(series_title)} vol {entry['volume']}" if series_title else ""
+    logs.manual_addition(
+        "%s %s by %s | %s, formats: %s | source: %s%s | status: %s",
+        "ADDED" if result.get("added") else "ALREADY PRESENT (status updated)",
+        _q(entry["title"]), _q(author or "unknown"), kind, ", ".join(fmt_list),
+        entry.get("source_label") or "manual entry", series, entry["status"])
     return jsonify(result)
 
 
@@ -467,15 +552,19 @@ def api_update_release(release_id: int):
         row = db.update_release_metadata(release_id, body, db_path=DB_PATH)
     except ValueError as e:
         abort(404, str(e))
+    fields = ", ".join(sorted(k for k in body if isinstance(k, str))) or "(none)"
+    logs.starred_update("EDITED %s: fields %s", _release_label(release_id), fields)
     return jsonify(row)
 
 
 @app.route("/api/release/<int:release_id>/remove", methods=["POST"])
 def api_remove_release(release_id: int):
+    label = _release_label(release_id)
     try:
         db.remove_manual_release(release_id, db_path=DB_PATH)
     except ValueError as e:
         abort(404, str(e))
+    logs.starred_update("REMOVED manually-added book %s", label)
     return jsonify({"removed": release_id})
 
 
@@ -489,7 +578,11 @@ def run_sync(db_path: Path, csv_url: str = db.CSV_URL_DEFAULT) -> dict:
 
 def cmd_sync(args):
     print(f"Fetching {args.csv_url} ...")
-    stats = run_sync(Path(args.db), args.csv_url)
+    try:
+        stats = run_sync(Path(args.db), args.csv_url)
+    except Exception as e:
+        logs.error("Manual sync failed: %s: %s", type(e).__name__, e)
+        raise
     print(f"Sync complete: {stats['added']} added, {stats['updated']} updated, "
           f"{stats['unchanged']} unchanged (of {stats['total']} releases in the feed).")
 
@@ -523,6 +616,7 @@ def _auto_sync_loop(db_path: Path, interval_hours: int) -> None:
                       f"({datetime.datetime.now():%Y-%m-%d %H:%M})", flush=True)
                 due_in = interval
             except Exception as e:  # network down etc. -- retry in an hour
+                logs.error("Auto-sync failed: %s: %s (retrying in 1 hour)", type(e).__name__, e)
                 print(f"[auto-sync] failed: {type(e).__name__}; retrying in 1 hour", flush=True)
                 due_in = 3600
         time.sleep(min(due_in, 3600))
@@ -550,10 +644,46 @@ def _redirect_output(log_file: str) -> None:
     sys.stdout = sys.stderr = fh
 
 
+def _install_shutdown_logging(started: float) -> dict:
+    """Write one appShutdown.log line however the server stops: Ctrl+C,
+    systemd/launchd stop (SIGTERM), closing the console on Windows
+    (SIGBREAK), a crash, or a normal return. A hard kill (SIGKILL, Task
+    Manager "End task") can't be caught by any program, so those leave
+    a START with no matching STOP."""
+    state = {"reason": "normal exit"}
+
+    def on_signal(signum, _frame):
+        try:
+            state["reason"] = f"received {signal.Signals(signum).name}"
+        except ValueError:
+            state["reason"] = f"received signal {signum}"
+        raise SystemExit(0)
+
+    for name in ("SIGTERM", "SIGINT", "SIGHUP", "SIGBREAK"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            try:
+                signal.signal(sig, on_signal)
+            except (ValueError, OSError):
+                pass
+
+    def on_exit():
+        up = int(time.time() - started)
+        logs.shutdown("STOP %s %s | reason: %s | uptime %dh %02dm %02ds | pid %d",
+                      APP_NAME, VERSION, state["reason"], up // 3600, up % 3600 // 60, up % 60,
+                      os.getpid())
+        print(f"{APP_NAME} stopped ({state['reason']}).", flush=True)
+
+    atexit.register(on_exit)
+    return state
+
+
 def cmd_serve(args):
     global DB_PATH
     if args.log_file:
         _redirect_output(args.log_file)
+    logs.setup(app)
+    started = time.time()
     DB_PATH = Path(args.db)
     host = "0.0.0.0" if args.lan else (args.host or config.get("server", "host", "127.0.0.1"))
     port = args.port or config.get_int("server", "port", DEFAULT_PORT)
@@ -566,10 +696,11 @@ def cmd_serve(args):
             try:
                 run_sync(DB_PATH)
             except Exception as e:
+                logs.error("First sync failed: %s: %s", type(e).__name__, e)
                 print(f"First sync failed ({type(e).__name__}); the server will start anyway "
                       "and retry later.", file=sys.stderr, flush=True)
         else:
-            print("No data in the DB yet. Run `python app.py sync` first.", file=sys.stderr)
+            print("No data in the DB yet. Run `python BookTrackerApp.py sync` first.", file=sys.stderr)
             sys.exit(1)
         years = db.get_years(db_path=DB_PATH)
 
@@ -588,6 +719,13 @@ def cmd_serve(args):
         print(f"Serving on http://{host}:{port}")
     sys.stdout.flush()
 
+    logs.startup(
+        "START %s %s | Python %s | %s %s | pid %d | db %s | listening on %s:%d | "
+        "auto-sync %s | logs %s",
+        APP_NAME, VERSION, platform.python_version(), platform.system(), platform.release(),
+        os.getpid(), DB_PATH, host, port, "on" if auto_sync else "off", logs.log_dir())
+    shutdown_state = _install_shutdown_logging(started)
+
     if args.debug:
         # Auto-reload + verbose logs only. Werkzeug's interactive debugger
         # is never enabled: it allows running arbitrary code from the
@@ -603,16 +741,23 @@ def cmd_serve(args):
               "run `pip install -r requirements.txt`)", file=sys.stderr)
         app.run(host=host, port=port)
         return
-    waitress_serve(app, host=host, port=port, threads=8, ident=APP_NAME)
+    try:
+        waitress_serve(app, host=host, port=port, threads=8, ident=APP_NAME)
+    except SystemExit:
+        raise
+    except BaseException as e:
+        shutdown_state["reason"] = f"crashed: {type(e).__name__}"
+        logs.error("Server stopped unexpectedly", exc_info=True)
+        raise
 
 
 def cmd_paths(args):
     print(f"App folder:   {config.APP_DIR}")
     print(f"Database:     {Path(args.db)}")
     cf = config.config_file()
-    print(f"Config file:  {cf}{'' if cf.exists() else '  (not created yet: python app.py init-config)'}")
+    print(f"Config file:  {cf}{'' if cf.exists() else '  (not created yet: python BookTrackerApp.py init-config)'}")
     print(f"Data folder:  {config.data_dir()}")
-    print(f"Log folder:   {config.log_dir()}")
+    print(f"Log folder:   {logs.log_dir()}")
 
 
 def cmd_init_config(args):
@@ -623,12 +768,12 @@ def cmd_init_config(args):
 
 
 def cmd_install_service(args):
-    import service
+    import BookTrackerService as service
     service.install(lan=args.lan, port=args.port)
 
 
 def cmd_uninstall_service(args):
-    import service
+    import BookTrackerService as service
     service.uninstall()
 
 

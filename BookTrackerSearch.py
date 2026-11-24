@@ -65,7 +65,7 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 
-import config as _config
+import BookTrackerCfg as _config
 
 REQUEST_TIMEOUT = 8
 USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -79,7 +79,7 @@ USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 # unbounded amount of time.
 MAX_SCRAPED_HTML_CHARS = 1_500_000
 
-# Read from the environment first, then config.ini (see config.py) --
+# Read from the environment first, then config.ini (see BookTrackerCfg.py) --
 # never from a file inside the app folder, so tokens can't end up in git.
 GOOGLE_BOOKS_API_KEY = _config.secret("api", "google_books_key")
 HARDCOVER_API_TOKEN = _config.secret("api", "hardcover_token")
@@ -587,7 +587,7 @@ def _hardcover_graphql(query: str, variables: Optional[dict] = None) -> Dict[str
     if not HARDCOVER_API_TOKEN:
         raise ExternalSearchError(
             "Hardcover isn't configured -- add hardcover_token to config.ini (see "
-            "`python app.py paths`) or set HARDCOVER_API_TOKEN in the environment "
+            "`python BookTrackerApp.py paths`) or set HARDCOVER_API_TOKEN in the environment "
             "(get a free token at https://hardcover.app/account/api). Never put the token "
             "directly in a source file; it can delete your Hardcover account if leaked."
         )

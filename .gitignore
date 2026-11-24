@@ -1,7 +1,8 @@
 # Local database
-booktracker.db
-booktracker.db-wal
-booktracker.db-shm
+BookTracker.db
+BookTracker.db-wal
+BookTracker.db-shm
+booktracker.db*
 lnrelease.db*
 
 # Virtual environment
@@ -30,5 +31,9 @@ __pycache__/
 *.last-sync
 # Old systemd unit (held a real token) and scratch output
 booktracker.service
+BookTrackerErr.txt
 err.txt
 config.ini
+
+# Activity logs (contain your book titles)
+Logs/

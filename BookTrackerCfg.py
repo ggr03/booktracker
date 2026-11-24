@@ -17,7 +17,7 @@ Settings come from, highest priority first:
   1. environment variables (HARDCOVER_API_TOKEN, GOOGLE_BOOKS_API_KEY,
      BOOKTRACKER_DB, BOOKTRACKER_HOST, BOOKTRACKER_PORT, ...)
   2. config.ini in the config directory above (created by
-     `python app.py init-config`, readable only by you)
+     `python BookTrackerApp.py init-config`, readable only by you)
   3. built-in defaults
 
 Only the standard library is used here (configparser, not tomllib), so
@@ -67,9 +67,22 @@ def data_dir() -> Path:
 
 
 def log_dir() -> Path:
+    """Where BookTrackerLogs writes its log files.
+
+    By default that's a "Logs" folder next to BookTrackerApp.py, so a dev
+    checkout keeps its logs alongside the code. If the app folder isn't
+    writable (installed under C:\\Program Files, /opt, /Applications ...)
+    it falls back to the per-user log location for the OS. Override with
+    BOOKTRACKER_LOG_DIR or [logging] dir in config.ini.
+    """
+    override = os.environ.get("BOOKTRACKER_LOG_DIR") or get("logging", "dir")
+    if override:
+        return Path(override).expanduser()
+    if os.access(str(APP_DIR), os.W_OK):
+        return APP_DIR / "Logs"
     if IS_MACOS:
         return Path.home() / "Library" / "Logs" / _MAC_WIN_NAME_MAC
-    return data_dir() / "logs"
+    return data_dir() / "Logs"
 
 
 def config_file() -> Path:
@@ -80,25 +93,80 @@ def config_file() -> Path:
 # Database location
 # ---------------------------------------------------------------------------
 
-LEGACY_APP_DIR_DB = APP_DIR / "booktracker.db"
-LEGACY_LNRELEASE_DB = APP_DIR / "lnrelease.db"
+DB_FILENAME = "BookTracker.db"
+APP_DIR_DB = APP_DIR / DB_FILENAME
+# Older names for the DB next to BookTrackerApp.py, newest first. Each is
+# renamed to DB_FILENAME on first start (see migrate_legacy_db).
+LEGACY_DB_NAMES = ("booktracker.db", "lnrelease.db")
+# Files that travel with a DB file and must be renamed together with it.
+DB_SIDECAR_SUFFIXES = ("-wal", "-shm", ".last-sync")
+
+
+def _legacy_db_files() -> list:
+    return [APP_DIR / n for n in LEGACY_DB_NAMES if (APP_DIR / n).exists()]
 
 
 def default_db_path() -> Path:
     """Where the SQLite DB lives when --db isn't given.
 
-    Existing installs keep working untouched: if a DB already sits next to
-    app.py (the pre-2026.11 layout), it's used in place. New installs put
-    it in the per-user data directory instead, which is the only option
-    that works when the app itself is installed somewhere read-only
-    (e.g. C:\\Program Files, /opt, /Applications).
+    Existing installs keep working: a DB already next to BookTrackerApp.py
+    (under its current or an older name) is used in place. New installs
+    put it in the per-user data directory instead, which is the only
+    option that works when the app itself is installed somewhere
+    read-only (e.g. C:\\Program Files, /opt, /Applications).
     """
     env = os.environ.get("BOOKTRACKER_DB") or get("database", "path")
     if env:
         return Path(env).expanduser()
-    if LEGACY_APP_DIR_DB.exists() or LEGACY_LNRELEASE_DB.exists():
-        return LEGACY_APP_DIR_DB
-    return data_dir() / "booktracker.db"
+    if APP_DIR_DB.exists() or _legacy_db_files():
+        return APP_DIR_DB
+    return data_dir() / DB_FILENAME
+
+
+def _actual_name(path: Path) -> str:
+    """The on-disk spelling of path's name (differs from path.name on a
+    case-insensitive filesystem such as default macOS or Windows)."""
+    try:
+        for entry in os.listdir(str(path.parent)):
+            if entry.lower() == path.name.lower():
+                return entry
+    except OSError:
+        pass
+    return path.name
+
+
+def _rename_with_sidecars(src: Path, dst: Path) -> None:
+    for suffix in ("",) + DB_SIDECAR_SUFFIXES:
+        a = src.with_name(src.name + suffix)
+        b = dst.with_name(dst.name + suffix)
+        if not a.exists():
+            continue
+        if a.name.lower() == b.name.lower():
+            # Case-only rename: go via a temporary name so it also works on
+            # case-insensitive filesystems.
+            tmp = a.with_name(a.name + ".renaming")
+            a.rename(tmp)
+            tmp.rename(b)
+        else:
+            a.rename(b)
+
+
+def migrate_legacy_db(target: Path) -> Optional[str]:
+    """If target is the app-folder DB and only an older-named DB exists,
+    rename it (plus its -wal/-shm/.last-sync files) to the current name.
+    Returns a description of what was renamed, or None."""
+    if Path(target) != APP_DIR_DB:
+        return None
+    for legacy in _legacy_db_files():
+        same_file = APP_DIR_DB.exists() and os.path.samefile(str(legacy), str(APP_DIR_DB))
+        if same_file and _actual_name(APP_DIR_DB) == DB_FILENAME:
+            continue                       # already correctly named
+        if APP_DIR_DB.exists() and not same_file:
+            continue                       # both exist: never overwrite the current DB
+        old_name = _actual_name(legacy)
+        _rename_with_sidecars(legacy, APP_DIR_DB)
+        return f"{old_name} -> {DB_FILENAME}"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -133,8 +201,13 @@ auto_sync = true
 # Hours between automatic syncs.
 interval_hours = 24
 
+[logging]
+# Folder for the log files. Leave empty for "Logs" next to BookTrackerApp.py
+# (or the per-user log folder if the app folder isn't writable).
+dir =
+
 [database]
-# Leave empty for the default location (see `python app.py paths`).
+# Leave empty for the default location (see `python BookTrackerApp.py paths`).
 path =
 """
 

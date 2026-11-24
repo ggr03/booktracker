@@ -1,8 +1,8 @@
 """
 Start Book Tracker automatically at login, on any supported OS.
 
-    python app.py install-service [--lan] [--port N]
-    python app.py uninstall-service
+    python BookTrackerApp.py install-service [--lan] [--port N]
+    python BookTrackerApp.py uninstall-service
 
   Linux with systemd (Debian, Ubuntu, MX, RHEL/Rocky/Alma, Fedora, ...)
       -> a systemd *user* unit: ~/.config/systemd/user/booktracker.service
@@ -14,7 +14,7 @@ Start Book Tracker automatically at login, on any supported OS.
       -> a shortcut in your Startup folder that runs pythonw (no console
          window, no admin rights needed)
 
-All of them run `app.py serve` with the Python that ran this command
+All of them run `BookTrackerApp.py serve` with the Python that ran this command
 (normally the project's venv), so nothing depends on your shell setup.
 Periodic LNRelease syncing happens inside the server itself now, so no
 separate timer/cron job is installed anywhere.
@@ -30,9 +30,10 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-import config
+import BookTrackerCfg as config
+import BookTrackerLogs as logs
 
-APP_PY = config.APP_DIR / "app.py"
+APP_PY = config.APP_DIR / "BookTrackerApp.py"
 SERVICE_NAME = "booktracker"
 MAC_LABEL = "local.booktracker"
 WIN_SHORTCUT_NAME = "Book Tracker.lnk"
@@ -132,12 +133,12 @@ def _install_linux(lan: bool, port: Optional[int]) -> None:
         _run(["systemctl", "--user", "restart", f"{SERVICE_NAME}.service"], check=True)
         print(f"Installed systemd user service: {unit}")
         print("  status:  systemctl --user status booktracker")
-        print("  logs:    journalctl --user -u booktracker -f")
+        print(f"  logs:    {logs.log_dir()}  (console output: journalctl --user -u booktracker -f)")
         print("To keep it running after you log out:  sudo loginctl enable-linger $USER")
     else:
         autostart = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "autostart"
         autostart.mkdir(parents=True, exist_ok=True)
-        log_file = config.log_dir() / "server.log"
+        log_file = logs.server_output_path()
         argv = [sys.executable] + _serve_args(lan, port, log_file)
         desktop = autostart / f"{SERVICE_NAME}.desktop"
         desktop.write_text(
@@ -197,8 +198,8 @@ def _plist_path() -> Path:
 def _install_macos(lan: bool, port: Optional[int]) -> None:
     plist = _plist_path()
     plist.parent.mkdir(parents=True, exist_ok=True)
-    logs = config.log_dir()
-    logs.mkdir(parents=True, exist_ok=True)
+    out_log = logs.server_output_path()
+    out_log.parent.mkdir(parents=True, exist_ok=True)
     uid = os.getuid()
     _run(["launchctl", "bootout", f"gui/{uid}", str(plist)])
     with open(plist, "wb") as fh:
@@ -208,14 +209,14 @@ def _install_macos(lan: bool, port: Optional[int]) -> None:
             "WorkingDirectory": str(config.APP_DIR),
             "RunAtLoad": True,
             "KeepAlive": {"SuccessfulExit": False},
-            "StandardOutPath": str(logs / "server.log"),
-            "StandardErrorPath": str(logs / "server.log"),
+            "StandardOutPath": str(out_log),
+            "StandardErrorPath": str(out_log),
         }, fh)
     r = _run(["launchctl", "bootstrap", f"gui/{uid}", str(plist)])
     if r.returncode != 0:   # older macOS
         _run(["launchctl", "load", "-w", str(plist)])
     print(f"Installed launchd agent: {plist}")
-    print(f"  logs:    {logs / 'server.log'}")
+    print(f"  logs:    {logs.log_dir()}")
     print(f"  restart: launchctl kickstart -k gui/{uid}/{MAC_LABEL}")
 
 
@@ -258,7 +259,7 @@ def _stop_windows_server() -> None:
 
 
 def _install_windows(lan: bool, port: Optional[int]) -> None:
-    log_file = config.log_dir() / "server.log"
+    log_file = logs.server_output_path()
     pythonw = _pythonw()
     args = _serve_args(lan, port, log_file)
     lnk = _startup_dir() / WIN_SHORTCUT_NAME

@@ -30,20 +30,36 @@ below — your data carries over automatically.
 
 `YYYY.MM.DD-NN` — the release date, plus a two-digit counter that only
 increments if more than one release ships the same day. The current
-version lives in one place, `version.py`, so bumping it for a new release
+version lives in one place, `BookTrackerVer.py`, so bumping it for a new release
 is a one-line change and every page picks it up automatically (see the
 small `v2026.11.24-01`-style tag in the header on every page).
 
 ### Changelog
 
+- **2026.11.24-02** — File renames and activity logs.
+  - Source files now carry the app name: `BookTrackerApp.py` (the entry
+    point, replacing `app.py`), `BookTrackerCfg.py`, `BookTrackerDB.py`,
+    `BookTrackerSearch.py`, `BookTrackerTemplate.py`, `BookTrackerVer.py`,
+    `BookTrackerService.py`, `BookTrackerLogs.py` (new), and the
+    installers `InstallBookTracker.sh` / `.ps1` and
+    `UninstallBookTracker.sh` / `.ps1`.
+  - The database is now `BookTracker.db`. An existing `booktracker.db`
+    (or `lnrelease.db`) next to the app is renamed automatically on first
+    start, together with its `-wal`, `-shm` and `.last-sync` files.
+  - New **Logs** folder with one file per kind of event: `appStartup.log`,
+    `appShutdown.log`, `manualBookAdditions.log`, `starredBookUpdates.log`,
+    `myBooksImports.log`, `appErrors.log`, plus `serverOutput.log` for
+    background runs. See [Logs](#logs).
+  - **Re-run the installer after updating.** The autostart entry has to
+    point at `BookTrackerApp.py` instead of `app.py`.
 - **2026.11.24-01** — Cross-platform release: Debian/Ubuntu/MX,
   RHEL/Rocky/Alma/Fedora, macOS, and Windows.
   - **Minimum Python is now 3.11** (was 3.9; 3.9 and 3.10 no longer get
     security fixes). Tested on 3.11 through 3.14.
-  - New `python app.py install-service` sets up autostart for each OS
+  - New `python BookTrackerApp.py install-service` sets up autostart for each OS
     (systemd user unit, XDG autostart when systemd isn't running,
-    a macOS launchd agent, or a Windows Startup shortcut). `install.sh`
-    (Linux/macOS) and `install.ps1` (Windows) wrap it.
+    a macOS launchd agent, or a Windows Startup shortcut). `InstallBookTracker.sh`
+    (Linux/macOS) and `InstallBookTracker.ps1` (Windows) wrap it.
   - The daily LNRelease sync now runs inside the server, so the separate
     `booktracker-sync.timer` is gone (the installer removes the old one).
   - API tokens move to a private `config.ini` in your per-user config
@@ -51,7 +67,7 @@ small `v2026.11.24-01`-style tag in the header on every page).
     Reinstalling moves an existing token out of the old unit
     automatically.
   - New installs keep the database in the per-user data folder; existing
-    installs keep using `booktracker.db` next to `app.py`.
+    installs keep using `BookTracker.db` next to `BookTrackerApp.py`.
   - Security: the server listens on `127.0.0.1` unless you pass `--lan`;
     cross-site POSTs (CSRF) and unknown `Host` names (DNS rebinding) are
     rejected; Amazon URL fetches re-check every redirect.
@@ -224,7 +240,7 @@ Afterwards, open **http://127.0.0.1:7077**.
 
 ```bash
 sudo apt install python3 python3-venv
-./install.sh
+./InstallBookTracker.sh
 ```
 
 On MX Linux this works with either init system: systemd boots get a
@@ -235,7 +251,7 @@ systemd user service, and SysVinit boots get a desktop autostart entry.
 ```bash
 sudo dnf install python3.12 python3.12-pip   # RHEL/Rocky/Alma 8 and 9
 sudo dnf install python3 python3-pip         # RHEL 10 and Fedora
-./install.sh
+./InstallBookTracker.sh
 ```
 
 The default `python3` on RHEL 8 and 9 (3.6 and 3.9) is too old. The
@@ -247,7 +263,7 @@ installer prints the `firewall-cmd` command that opens the port.
 
 ```bash
 brew install python
-./install.sh
+./InstallBookTracker.sh
 ```
 
 You can use the installer from python.org instead of Homebrew. The
@@ -261,7 +277,7 @@ Install Python 3.11+ from python.org (tick **Add python.exe to PATH**), or
 run `winget install Python.Python.3.14`. Then, in PowerShell:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1
+powershell -ExecutionPolicy Bypass -File .\InstallBookTracker.ps1
 ```
 
 The server runs in the background with no console window, from a
@@ -279,26 +295,26 @@ installer to serve it on your network too. Read
 ```bash
 python3 -m venv venv
 venv/bin/pip install -r requirements.txt        # Windows: venv\Scripts\pip
-venv/bin/python app.py serve                     # Windows: venv\Scripts\python app.py serve
+venv/bin/python BookTrackerApp.py serve                     # Windows: venv\Scripts\python BookTrackerApp.py serve
 ```
 
 ### Uninstalling
 
-Run `./uninstall.sh` on Linux or macOS, or `.\uninstall.ps1` on Windows.
+Run `./UninstallBookTracker.sh` on Linux or macOS, or `.\UninstallBookTracker.ps1` on Windows.
 This removes only the autostart entry. Your database, `config.ini`, and
 the app folder stay where they are.
 
 ## Where your files live
 
-Run `python app.py paths` to print the exact locations on your machine.
+Run `python BookTrackerApp.py paths` to print the exact locations on your machine.
 
 | | Linux | macOS | Windows |
 |---|---|---|---|
 | `config.ini` | `~/.config/booktracker/` | `~/Library/Application Support/Book Tracker/` | `%APPDATA%\BookTracker\` |
 | Database | `~/.local/share/booktracker/` | `~/Library/Application Support/Book Tracker/` | `%LOCALAPPDATA%\BookTracker\` |
 
-If `booktracker.db` (or an old `lnrelease.db`) already sits next to
-`app.py`, it keeps being used in place. To move it into the standard
+If `BookTracker.db` (or an old `lnrelease.db`) already sits next to
+`BookTrackerApp.py`, it keeps being used in place. To move it into the standard
 folder, stop the app, move the file there, and start the app again.
 You can also point anywhere you like with `--db`, `BOOKTRACKER_DB`, or
 `[database] path` in `config.ini`.
@@ -328,24 +344,24 @@ need any of this. To run things by hand, use the venv's Python
 ```
 # 1. Pull the latest release data from LNRelease's books.csv into the DB.
 #    Safe to re-run any time -- only new/changed rows are written.
-python app.py sync
+python BookTrackerApp.py sync
 
 # 2. Start the local server.
-python app.py serve
+python BookTrackerApp.py serve
 # -> http://127.0.0.1:7077  (add --lan to also serve on your network)
 
 # Show where the DB, config.ini and logs live on this OS:
-python app.py paths
+python BookTrackerApp.py paths
 
 # Print the version and exit:
-python app.py --version
+python BookTrackerApp.py --version
 ```
 
 Open that URL in a browser. It redirects to the most recent year with data.
 
 While the server is running it re-syncs LNRelease data on its own once a
 day (`[sync]` in `config.ini`; turn it off with `--no-auto-sync`). Running
-`python app.py sync` by hand also works any time. Syncing is cheap and
+`python BookTrackerApp.py sync` by hand also works any time. Syncing is cheap and
 safe to repeat: a sync with nothing new writes zero rows. Books you added
 yourself on the Add Book page are never touched, because sync only
 writes LNRelease rows.
@@ -377,8 +393,8 @@ repo and should never be committed to one:
 
 1. Go to [hardcover.app/account/api](https://hardcover.app/account/api)
    and copy your token (it's a long `Bearer eyJ...` string).
-2. Put it in your private `config.ini` (`python app.py paths` shows
-   where it is, and `python app.py init-config` creates it). Don't paste
+2. Put it in your private `config.ini` (`python BookTrackerApp.py paths` shows
+   where it is, and `python BookTrackerApp.py init-config` creates it). Don't paste
    it into any `.py` file:
    ```ini
    [api]
@@ -476,7 +492,7 @@ result lands in an editable form instead of being trusted blindly.
 ## How each enhancement works
 
 **1. Multi-year, no wasted writes.** All years live in one SQLite DB
-(`booktracker.db`). `sync` diffs incoming CSV rows against what's already
+(`BookTracker.db`). `sync` diffs incoming CSV rows against what's already
 stored and only INSERTs new rows / UPDATEs changed ones — unchanged rows
 are skipped entirely. Pages are rendered on request from the DB
 (`GET /year/<year>`), and the year dropdown just lists `SELECT DISTINCT
@@ -528,9 +544,37 @@ star/status persistence that survives regeneration entirely. So: yes,
 worth it — but the win is on the read/write/maintenance side, not raw
 page-rendering speed.
 
+## Logs
+
+Book Tracker writes a separate log file for each kind of event to a
+`Logs` folder next to `BookTrackerApp.py`. Run
+`python BookTrackerApp.py paths` to see the exact location.
+
+| File | What's in it |
+|---|---|
+| `appStartup.log` | Every server start: version, Python, OS, process ID, database, address and port, auto-sync setting. Also records an automatic database rename |
+| `appShutdown.log` | Every server stop: the reason (Ctrl+C, `SIGTERM` from systemd/launchd, `SIGBREAK` on Windows, a crash, or a normal exit) and uptime |
+| `manualBookAdditions.log` | Books added on the ➕ Add Book page: title, author, kind, formats, source, series and volume, reading status |
+| `starredBookUpdates.log` | Star/unstar, volume and series reading-status changes, format preferences, and edits or removals of manually-added books |
+| `myBooksImports.log` | Goodreads CSV imports into 📚 My Books (rows read, added, duplicates, skipped, warnings), rejected uploads, and Date Read edits or removals |
+| `appErrors.log` | Unhandled errors with full tracebacks, failed external lookups (Hardcover, Google Books, ...), and failed syncs |
+| `serverOutput.log` | Raw console output, only for background runs that have no console (Windows, macOS, Linux without systemd). On systemd, use `journalctl --user -u booktracker` |
+
+- **Rotation:** each file rotates at 1 MB and keeps 5 older copies
+  (`appErrors.log.1` ... `.5`), so the folder stays small.
+- **Location:** if the app folder isn't writable (for example under
+  `C:\Program Files` or `/opt`), logs go to the per-user log folder
+  instead. Set `[logging] dir` in `config.ini` or `BOOKTRACKER_LOG_DIR` to
+  choose a folder yourself.
+- **Privacy:** the logs contain your book titles, so `Logs/` is excluded
+  from git.
+- **Hard kills:** a stop from `kill -9` or Task Manager's "End task"
+  can't be detected by any program, so it leaves a START line in
+  `appStartup.log` with no matching STOP in `appShutdown.log`.
+
 ## Web server
 
-`python app.py serve` runs the Flask app on
+`python BookTrackerApp.py serve` runs the Flask app on
 [Waitress](https://docs.pylonsproject.org/projects/waitress/), a
 production-grade WSGI server and one of the servers Flask's own
 deployment docs recommend. Waitress was chosen because it's the one
@@ -555,8 +599,8 @@ login.
 
 By default the server only listens on `127.0.0.1`, so only the computer
 running it can open the app. To use it from your phone or another PC,
-use `--lan` (`./install.sh --lan`, `.\install.ps1 -Lan`, or
-`python app.py serve --lan`), or set `host = 0.0.0.0` in `config.ini`.
+use `--lan` (`./InstallBookTracker.sh --lan`, `.\InstallBookTracker.ps1 -Lan`, or
+`python BookTrackerApp.py serve --lan`), or set `host = 0.0.0.0` in `config.ini`.
 On startup it prints both URLs:
 
 ```
@@ -585,18 +629,18 @@ If you're running this on a machine that already has an LNRelease
 install, three things carry over automatically the first time you start
 the new version, no manual steps needed:
 
-- **Database**: if `booktracker.db` doesn't exist yet but `lnrelease.db`
+- **Database**: if `BookTracker.db` doesn't exist yet but `lnrelease.db`
   does, it's renamed (not copied) on first startup — your stars, statuses,
   and every synced release come along as-is.
 - **Schema**: new columns (subtitle, narrator, series title, runtime,
   ISBN, cover URL, genres, description, language, and a couple of
   internal bookkeeping fields) are added via `ALTER TABLE` automatically;
   existing rows just get `NULL` for the new fields until you edit them.
-- **systemd units**: re-running `install.sh` replaces the old units. It
+- **systemd units**: re-running `InstallBookTracker.sh` replaces the old units. It
   removes `booktracker-sync.service` / `.timer` (syncing now happens
   inside the server) and the old `lnrelease.*` names, and moves a
   `HARDCOVER_API_TOKEN` from the old unit into `config.ini`.
-- **Database location**: an existing `booktracker.db` next to `app.py`
+- **Database location**: an existing `BookTracker.db` next to `BookTrackerApp.py`
   keeps being used in place. New installs use the per-user data folder
   (see [Where your files live](#where-your-files-live)).
 
@@ -612,35 +656,50 @@ pointing at the old default of `7000` — the new default is `7077`.
 
 ```
 booktracker/
-├── app.py                    Flask routes + CLI entry point
-│                             (sync | serve [--lan] | paths | init-config |
-│                             install-service | uninstall-service | --version),
-│                             request guard (CSRF / Host checks), built-in
-│                             periodic sync
-├── config.py                 Per-OS file locations (config, data, logs, DB)
-│                             and config.ini / environment-variable settings
-├── service.py                Per-OS autostart: systemd user unit, XDG
-│                             autostart, macOS launchd agent, Windows Startup
-│                             shortcut
-├── db.py                     SQLite schema, CSV sync/diff logic,
-│                             search/star/status queries, manual add/edit/
-│                             remove, and the imported_books (My Books) table
-├── external_search.py        Hardcover / Google Books / Open Library /
-│                             Audible / Audnexus lookups and Amazon URL
-│                             scraping for the Add page
-├── template.py               Server-rendered HTML/CSS/JS for every page
-├── version.py                App name + version string
-├── requirements.txt          Flask, requests, waitress
-├── install.sh / uninstall.sh Linux + macOS installer wrappers
-├── install.ps1 / uninstall.ps1  Windows installer wrappers
-├── tests/test_smoke.py       Cross-platform smoke tests (stdlib unittest)
-├── .github/workflows/ci.yml  CI: Ubuntu, Debian, Rocky 9, macOS, Windows
-├── static/                   App icon + favicons
+├── BookTrackerApp.py           Flask routes + CLI entry point
+│                               (sync | serve [--lan] | paths | init-config |
+│                               install-service | uninstall-service | --version),
+│                               request guard (CSRF / Host checks), built-in
+│                               periodic sync, startup/shutdown logging
+├── BookTrackerCfg.py           Per-OS file locations (config, data, logs, DB),
+│                               DB filename + legacy-name migration, and
+│                               config.ini / environment-variable settings
+├── BookTrackerLogs.py          The Logs folder: one rotating log file per
+│                               kind of event (see README > Logs)
+├── BookTrackerService.py       Per-OS autostart: systemd user unit, XDG
+│                               autostart, macOS launchd agent, Windows
+│                               Startup shortcut
+├── BookTrackerDB.py            SQLite schema, CSV sync/diff logic,
+│                               search/star/status queries, manual add/edit/
+│                               remove, and the imported_books (My Books) table
+├── BookTrackerSearch.py        Hardcover / Google Books / Open Library /
+│                               Audible / Audnexus lookups and Amazon URL
+│                               scraping for the Add page
+├── BookTrackerTemplate.py      Server-rendered HTML/CSS/JS for every page
+├── BookTrackerVer.py           App name + version string
+├── requirements.txt            Flask, requests, waitress
+├── InstallBookTracker.sh       Linux + macOS installer
+├── UninstallBookTracker.sh     Linux + macOS uninstaller (autostart only)
+├── InstallBookTracker.ps1      Windows installer
+├── UninstallBookTracker.ps1    Windows uninstaller (autostart only)
+├── tests/test_smoke.py         Cross-platform smoke tests (stdlib unittest)
+├── .github/workflows/ci.yml    CI: Ubuntu, Debian, Rocky 9, macOS, Windows
+├── static/                     App icon + favicons
 ├── .gitignore
-└── README.md
+├── README.md
+│
+│   Created at runtime, not in git:
+├── BookTracker.db              SQLite database (if kept next to the app;
+│                               new installs use the per-user data folder)
+├── BookTracker.db.last-sync    Time of the last LNRelease sync
+├── Logs/                       appStartup.log, appShutdown.log,
+│                               manualBookAdditions.log, starredBookUpdates.log,
+│                               myBooksImports.log, appErrors.log,
+│                               serverOutput.log
+└── venv/                       Python virtual environment
 ```
 
-Not shown above: `booktracker.db`, the SQLite database itself (see
+Not shown above: `BookTracker.db`, the SQLite database itself (see
 [Where your files live](#where-your-files-live)), `config.ini`, and
 `venv/`, the virtual environment — both are created the first time you
 run the app and are excluded from git via `.gitignore`, since they're
@@ -654,7 +713,7 @@ version, the following categories have been addressed:
 
 - **SSRF** — the "paste an Amazon URL" feature makes a live outbound
   request to whatever URL you give it, which is inherently an SSRF
-  shape. `_is_amazon_url()` in `external_search.py` validates the
+  shape. `_is_amazon_url()` in `BookTrackerSearch.py` validates the
   request's *actual parsed hostname* (via `urllib.parse`) against a
   strict `amazon.<tld>` pattern before any request is made — not just
   whether the string "amazon.com" appears somewhere in it — closing off
@@ -681,7 +740,7 @@ version, the following categories have been addressed:
   embedded into every page twice: once server-side into a `<script>`
   tag as JSON, and again client-side into HTML via JavaScript template
   literals. Both paths are now escaped: `_safe_json_for_script()` in
-  `template.py` prevents a title containing literal `</script>` from
+  `BookTrackerTemplate.py` prevents a title containing literal `</script>` from
   closing the tag early, and every place client-side JS builds HTML
   from book data now runs it through `escapeHtml()`/`escapeAttr()`
   first. Both fixes were verified against actual exploit payloads run

@@ -1,8 +1,8 @@
 <#
   Book Tracker installer for Windows 10/11 (PowerShell 5.1+).
 
-    powershell -ExecutionPolicy Bypass -File .\install.ps1          # this PC only
-    powershell -ExecutionPolicy Bypass -File .\install.ps1 -Lan     # also on your network
+    powershell -ExecutionPolicy Bypass -File .\InstallBookTracker.ps1          # this PC only
+    powershell -ExecutionPolicy Bypass -File .\InstallBookTracker.ps1 -Lan     # also on your network
 
   Creates .\venv, installs dependencies, creates a private config.ini in
   %APPDATA%\BookTracker, runs the first sync, and adds a Startup-folder
@@ -38,12 +38,12 @@ $vpy = Join-Path $PSScriptRoot 'venv\Scripts\python.exe'
 & $vpy -m pip install --quiet -r requirements.txt
 
 # 3-5. Config, first sync, autostart.
-& $vpy app.py init-config
-& $vpy app.py sync
+& $vpy BookTrackerApp.py init-config
+& $vpy BookTrackerApp.py sync
 if ($LASTEXITCODE -ne 0) { Write-Warning 'Initial sync failed; the server will retry automatically.' }
 
-$svcArgs = @('app.py', 'install-service')
+$svcArgs = @('BookTrackerApp.py', 'install-service')
 if ($Lan) { $svcArgs += '--lan' }
 if ($Port -gt 0) { $svcArgs += @('--port', "$Port") }
 & $vpy @svcArgs
-& $vpy app.py paths
+& $vpy BookTrackerApp.py paths

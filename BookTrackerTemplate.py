@@ -1,6 +1,6 @@
 import json
 
-from version import APP_NAME, VERSION
+from BookTrackerVer import APP_NAME, VERSION
 
 
 def _safe_json_for_script(obj) -> str:
@@ -1617,7 +1617,7 @@ function onProviderChange() {{
         hint.textContent = '';
     }}
     if (provider === 'hardcover' && providerStatus && !providerStatus.hardcover_configured) {{
-        hint.textContent = 'Hardcover isn\\'t configured yet — add hardcover_token to config.ini (run: python app.py paths to find it) or set HARDCOVER_API_TOKEN, then restart the app. Free token: hardcover.app/account/api';
+        hint.textContent = 'Hardcover isn\\'t configured yet — add hardcover_token to config.ini (run: python BookTrackerApp.py paths to find it) or set HARDCOVER_API_TOKEN, then restart the app. Free token: hardcover.app/account/api';
     }}
 }}
 

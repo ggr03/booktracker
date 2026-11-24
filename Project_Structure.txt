@@ -1,27 +1,42 @@
 booktracker/
-├── app.py                    Flask routes + CLI entry point
-│                             (sync | serve [--lan] | paths | init-config |
-│                             install-service | uninstall-service | --version),
-│                             request guard (CSRF / Host checks), built-in
-│                             periodic sync
-├── config.py                 Per-OS file locations (config, data, logs, DB)
-│                             and config.ini / environment-variable settings
-├── service.py                Per-OS autostart: systemd user unit, XDG
-│                             autostart, macOS launchd agent, Windows Startup
-│                             shortcut
-├── db.py                     SQLite schema, CSV sync/diff logic,
-│                             search/star/status queries, manual add/edit/
-│                             remove, and the imported_books (My Books) table
-├── external_search.py        Hardcover / Google Books / Open Library /
-│                             Audible / Audnexus lookups and Amazon URL
-│                             scraping for the Add page
-├── template.py               Server-rendered HTML/CSS/JS for every page
-├── version.py                App name + version string
-├── requirements.txt          Flask, requests, waitress
-├── install.sh / uninstall.sh Linux + macOS installer wrappers
-├── install.ps1 / uninstall.ps1  Windows installer wrappers
-├── tests/test_smoke.py       Cross-platform smoke tests (stdlib unittest)
-├── .github/workflows/ci.yml  CI: Ubuntu, Debian, Rocky 9, macOS, Windows
-├── static/                   App icon + favicons
+├── BookTrackerApp.py           Flask routes + CLI entry point
+│                               (sync | serve [--lan] | paths | init-config |
+│                               install-service | uninstall-service | --version),
+│                               request guard (CSRF / Host checks), built-in
+│                               periodic sync, startup/shutdown logging
+├── BookTrackerCfg.py           Per-OS file locations (config, data, logs, DB),
+│                               DB filename + legacy-name migration, and
+│                               config.ini / environment-variable settings
+├── BookTrackerLogs.py          The Logs folder: one rotating log file per
+│                               kind of event (see README > Logs)
+├── BookTrackerService.py       Per-OS autostart: systemd user unit, XDG
+│                               autostart, macOS launchd agent, Windows
+│                               Startup shortcut
+├── BookTrackerDB.py            SQLite schema, CSV sync/diff logic,
+│                               search/star/status queries, manual add/edit/
+│                               remove, and the imported_books (My Books) table
+├── BookTrackerSearch.py        Hardcover / Google Books / Open Library /
+│                               Audible / Audnexus lookups and Amazon URL
+│                               scraping for the Add page
+├── BookTrackerTemplate.py      Server-rendered HTML/CSS/JS for every page
+├── BookTrackerVer.py           App name + version string
+├── requirements.txt            Flask, requests, waitress
+├── InstallBookTracker.sh       Linux + macOS installer
+├── UninstallBookTracker.sh     Linux + macOS uninstaller (autostart only)
+├── InstallBookTracker.ps1      Windows installer
+├── UninstallBookTracker.ps1    Windows uninstaller (autostart only)
+├── tests/test_smoke.py         Cross-platform smoke tests (stdlib unittest)
+├── .github/workflows/ci.yml    CI: Ubuntu, Debian, Rocky 9, macOS, Windows
+├── static/                     App icon + favicons
 ├── .gitignore
-└── README.md
+├── README.md
+│
+│   Created at runtime, not in git:
+├── BookTracker.db              SQLite database (if kept next to the app;
+│                               new installs use the per-user data folder)
+├── BookTracker.db.last-sync    Time of the last LNRelease sync
+├── Logs/                       appStartup.log, appShutdown.log,
+│                               manualBookAdditions.log, starredBookUpdates.log,
+│                               myBooksImports.log, appErrors.log,
+│                               serverOutput.log
+└── venv/                       Python virtual environment

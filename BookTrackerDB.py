@@ -30,12 +30,11 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
-import config as _config
+import BookTrackerCfg as _config
 
 # Resolved per-OS (see config.default_db_path): an existing DB next to
-# app.py is kept in place; new installs use the per-user data directory.
+# BookTrackerApp.py is kept in place; new installs use the per-user data directory.
 DEFAULT_DB_PATH = _config.default_db_path()
-_LEGACY_DB_PATH = _config.LEGACY_LNRELEASE_DB  # pre-rename filename
 
 CSV_URL_DEFAULT = "https://raw.githubusercontent.com/LNRelease/lnrelease.github.io/main/books.csv"
 
@@ -179,12 +178,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_legacy_db_file(db_path: Path) -> None:
-    """Book Tracker used to be called 'LNRelease', with a DB file named
-    lnrelease.db. If the (new-name) DB doesn't exist yet but the old one
-    does, adopt it instead of silently starting an empty database."""
-    if db_path == _config.LEGACY_APP_DIR_DB and not db_path.exists() and _LEGACY_DB_PATH.exists():
-        _LEGACY_DB_PATH.rename(db_path)
-        print(f"Renamed {_LEGACY_DB_PATH.name} -> {db_path.name} (Book Tracker was previously LNRelease).")
+    """Older releases named the DB lnrelease.db, then booktracker.db.
+    If only an old-named file exists, adopt it (with its -wal/-shm files)
+    instead of silently starting an empty database."""
+    renamed = _config.migrate_legacy_db(db_path)
+    if renamed:
+        print(f"Renamed database {renamed}")
+        import BookTrackerLogs
+        BookTrackerLogs.startup("DATABASE RENAMED %s (in %s)", renamed, Path(db_path).parent)
 
 
 # DB files whose schema/migrations have already been applied by this
@@ -786,7 +787,7 @@ def remove_manual_release(release_id: int, db_path: Path = DEFAULT_DB_PATH) -> N
 # Sanity caps. A typical Goodreads export with 1,000 books is ~500 KB; the
 # 20 MB / 50,000-row caps give 40x headroom on both axes while still
 # bounding worst-case work (and memory) if a hostile or malformed file is
-# uploaded. The per-request 25 MB Flask cap (see app.py) provides an
+# uploaded. The per-request 25 MB Flask cap (see BookTrackerApp.py) provides an
 # outer defence before this code even runs.
 MAX_IMPORT_ROWS = 50_000
 MAX_IMPORT_WARNINGS = 100

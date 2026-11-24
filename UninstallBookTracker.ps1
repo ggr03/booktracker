@@ -3,4 +3,4 @@
 $ErrorActionPreference = 'Stop'
 $vpy = Join-Path $PSScriptRoot 'venv\Scripts\python.exe'
 if (-not (Test-Path $vpy)) { $vpy = 'python' }
-& $vpy (Join-Path $PSScriptRoot 'app.py') uninstall-service
+& $vpy (Join-Path $PSScriptRoot 'BookTrackerApp.py') uninstall-service

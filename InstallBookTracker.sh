@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 # Book Tracker installer for Linux (Debian/Ubuntu/MX, RHEL/Rocky/Alma/Fedora,
-# and most others) and macOS. Windows users: run install.ps1 instead.
+# and most others) and macOS. Windows users: run InstallBookTracker.ps1 instead.
 #
-#   ./install.sh          # only this computer can open the app
-#   ./install.sh --lan    # also reachable from other devices on your network
+#   ./InstallBookTracker.sh          # only this computer can open the app
+#   ./InstallBookTracker.sh --lan    # also reachable from other devices on your network
 #
 # Creates ./venv, installs dependencies, creates a private config.ini,
 # runs the first sync, then registers autostart via
-# `python app.py install-service` (systemd user unit, XDG autostart, or a
-# macOS launchd agent -- see service.py).
+# `python BookTrackerApp.py install-service` (systemd user unit, XDG autostart, or a
+# macOS launchd agent -- see BookTrackerService.py).
 set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$APP_DIR"
 
-if [ ! -f app.py ]; then
-    echo "ERROR: app.py not found next to install.sh ($APP_DIR)." >&2
+if [ ! -f BookTrackerApp.py ]; then
+    echo "ERROR: BookTrackerApp.py not found next to InstallBookTracker.sh ($APP_DIR)." >&2
     exit 1
 fi
 
@@ -62,13 +62,13 @@ venv/bin/python -m pip install --quiet --upgrade pip
 venv/bin/python -m pip install --quiet -r requirements.txt
 
 # 3. Private config file (API tokens live here, never in this folder).
-venv/bin/python app.py init-config
+venv/bin/python BookTrackerApp.py init-config
 
 # 4. First sync (skipped if a DB already has data -- sync is diff-only anyway).
-venv/bin/python app.py sync || echo "WARNING: initial sync failed; the server will retry automatically."
+venv/bin/python BookTrackerApp.py sync || echo "WARNING: initial sync failed; the server will retry automatically."
 
 # 5. Autostart.
-venv/bin/python app.py install-service "$@"
+venv/bin/python BookTrackerApp.py install-service "$@"
 
 echo
-venv/bin/python app.py paths
+venv/bin/python BookTrackerApp.py paths
