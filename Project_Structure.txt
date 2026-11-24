@@ -1,0 +1,27 @@
+booktracker/
+├── app.py                    Flask routes + CLI entry point
+│                             (sync | serve [--lan] | paths | init-config |
+│                             install-service | uninstall-service | --version),
+│                             request guard (CSRF / Host checks), built-in
+│                             periodic sync
+├── config.py                 Per-OS file locations (config, data, logs, DB)
+│                             and config.ini / environment-variable settings
+├── service.py                Per-OS autostart: systemd user unit, XDG
+│                             autostart, macOS launchd agent, Windows Startup
+│                             shortcut
+├── db.py                     SQLite schema, CSV sync/diff logic,
+│                             search/star/status queries, manual add/edit/
+│                             remove, and the imported_books (My Books) table
+├── external_search.py        Hardcover / Google Books / Open Library /
+│                             Audible / Audnexus lookups and Amazon URL
+│                             scraping for the Add page
+├── template.py               Server-rendered HTML/CSS/JS for every page
+├── version.py                App name + version string
+├── requirements.txt          Flask, requests, waitress
+├── install.sh / uninstall.sh Linux + macOS installer wrappers
+├── install.ps1 / uninstall.ps1  Windows installer wrappers
+├── tests/test_smoke.py       Cross-platform smoke tests (stdlib unittest)
+├── .github/workflows/ci.yml  CI: Ubuntu, Debian, Rocky 9, macOS, Windows
+├── static/                   App icon + favicons
+├── .gitignore
+└── README.md

@@ -1,17 +1,9 @@
 #!/usr/bin/env bash
+# Removes Book Tracker's autostart entry (systemd user unit, XDG autostart,
+# or macOS launchd agent), including units from older releases.
+# App files, venv, config.ini and the database are left untouched.
 set -euo pipefail
-
-UNIT_DIR="$HOME/.config/systemd/user"
-
-systemctl --user disable --now booktracker.service 2>/dev/null || true
-systemctl --user disable --now booktracker-sync.timer 2>/dev/null || true
-# Old unit names, in case this is upgrading a pre-rename LNRelease install.
-systemctl --user disable --now lnrelease.service 2>/dev/null || true
-systemctl --user disable --now lnrelease-sync.timer 2>/dev/null || true
-
-rm -f "$UNIT_DIR/booktracker.service" "$UNIT_DIR/booktracker-sync.service" "$UNIT_DIR/booktracker-sync.timer"
-rm -f "$UNIT_DIR/lnrelease.service" "$UNIT_DIR/lnrelease-sync.service" "$UNIT_DIR/lnrelease-sync.timer"
-systemctl --user daemon-reload
-
-echo "Removed Book Tracker systemd user units."
-echo "(App files, venv, and the database were left untouched.)"
+APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PY="$APP_DIR/venv/bin/python"
+[ -x "$PY" ] || PY="$(command -v python3)"
+"$PY" "$APP_DIR/app.py" uninstall-service

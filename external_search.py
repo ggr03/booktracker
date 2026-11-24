@@ -61,9 +61,11 @@ import time
 import json
 import html as _html
 from typing import Dict, List, Any, Optional
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import requests
+
+import config as _config
 
 REQUEST_TIMEOUT = 8
 USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -77,8 +79,10 @@ USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 # unbounded amount of time.
 MAX_SCRAPED_HTML_CHARS = 1_500_000
 
-GOOGLE_BOOKS_API_KEY = os.environ.get("GOOGLE_BOOKS_API_KEY", "").strip()
-HARDCOVER_API_TOKEN = os.environ.get("HARDCOVER_API_TOKEN", "").strip()
+# Read from the environment first, then config.ini (see config.py) --
+# never from a file inside the app folder, so tokens can't end up in git.
+GOOGLE_BOOKS_API_KEY = _config.secret("api", "google_books_key")
+HARDCOVER_API_TOKEN = _config.secret("api", "hardcover_token")
 
 
 class ExternalSearchError(Exception):
@@ -582,7 +586,8 @@ query BookBySlug($slug: String!) {
 def _hardcover_graphql(query: str, variables: Optional[dict] = None) -> Dict[str, Any]:
     if not HARDCOVER_API_TOKEN:
         raise ExternalSearchError(
-            "Hardcover isn't configured -- set HARDCOVER_API_TOKEN in the environment "
+            "Hardcover isn't configured -- add hardcover_token to config.ini (see "
+            "`python app.py paths`) or set HARDCOVER_API_TOKEN in the environment "
             "(get a free token at https://hardcover.app/account/api). Never put the token "
             "directly in a source file; it can delete your Hardcover account if leaked."
         )
@@ -857,6 +862,31 @@ _URL_PATTERNS = [
 _AMAZON_HOST_RE = re.compile(r"^([a-z0-9-]+\.)*amazon\.[a-z]{2,3}(\.[a-z]{2,3})?$", re.IGNORECASE)
 
 
+# Amazon storefronts "Fetch from URL" may contact. Outbound requests take
+# their host from this constant tuple only (see _amazon_storefront).
+_AMAZON_STOREFRONTS = (
+    "amazon.com", "amazon.ca", "amazon.com.mx", "amazon.com.br", "amazon.co.uk",
+    "amazon.ie", "amazon.de", "amazon.fr", "amazon.it", "amazon.es", "amazon.nl",
+    "amazon.se", "amazon.pl", "amazon.com.be", "amazon.com.tr", "amazon.ae",
+    "amazon.sa", "amazon.eg", "amazon.in", "amazon.co.jp", "amazon.sg",
+    "amazon.com.au",
+)
+
+
+# Amazon product IDs: a Kindle/audio ASIN (B0...) or an ISBN-10 for print.
+_AMAZON_ID_RE = re.compile(r"^[A-Z0-9]{10}$", re.IGNORECASE)
+
+
+def _amazon_storefront(host: str) -> Optional[str]:
+    """The matching constant from _AMAZON_STOREFRONTS for host (itself or
+    any subdomain of it), or None."""
+    host = (host or "").lower().rstrip(".")
+    for store in _AMAZON_STOREFRONTS:
+        if host == store or host.endswith("." + store):
+            return store
+    return None
+
+
 def _is_amazon_url(url: str) -> bool:
     """True only if url is an http(s) URL whose actual host is
     amazon.<tld> (or a subdomain of it) -- not merely a URL that
@@ -1034,11 +1064,37 @@ def fetch_amazon_product(url: str, asin: str) -> Dict[str, Any]:
         result["warning"] = "That doesn't look like an Amazon product URL; fill in details manually."
         return result
     try:
-        resp = requests.get(url, timeout=REQUEST_TIMEOUT, headers={
+        headers = {
             "User-Agent": USER_AGENT,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
-        })
+        }
+        # The request URL is never the pasted URL itself: it's rebuilt as
+        # https://www.<storefront>/dp/<ASIN>, where <storefront> is taken
+        # from the constant _AMAZON_STOREFRONTS table and the ASIN has
+        # been validated as 10 alphanumerics. Redirects are followed by
+        # hand and rebuilt the same way, so no hop can reach a host
+        # outside that table (e.g. an internal address).
+        store = _amazon_storefront(urlparse(url).hostname or "")
+        if store is None or not _AMAZON_ID_RE.match(asin or ""):
+            result["warning"] = "Unsupported Amazon store or product ID; fill in details manually."
+            return result
+        next_url = f"https://www.{store}/dp/{asin.upper()}"
+        for _hop in range(5):
+            resp = requests.get(next_url, timeout=REQUEST_TIMEOUT, headers=headers,
+                                allow_redirects=False)
+            if resp.is_redirect or resp.is_permanent_redirect:
+                loc = urlparse(urljoin(next_url, resp.headers.get("Location", "")))
+                hop_store = _amazon_storefront(loc.hostname or "")
+                if hop_store is None or loc.scheme not in ("http", "https"):
+                    result["warning"] = "Amazon redirected somewhere unexpected; fill in details manually."
+                    return result
+                next_url = f"https://www.{hop_store}{loc.path or '/'}" + (f"?{loc.query}" if loc.query else "")
+                continue
+            break
+        else:
+            result["warning"] = "Too many redirects from Amazon; fill in details manually."
+            return result
         resp.raise_for_status()
         html_text = resp.text[:MAX_SCRAPED_HTML_CHARS]
         # Normalize non-breaking-space entities to regular spaces before

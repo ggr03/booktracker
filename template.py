@@ -23,9 +23,6 @@ MONTH_NAMES = {1: 'January', 2: 'February', 3: 'March', 4: 'April',
                5: 'May', 6: 'June', 7: 'July', 8: 'August',
                9: 'September', 10: 'October', 11: 'November', 12: 'December'}
 
-# ---------------------------------------------------------------------------
-# Theme: CSS custom properties, dark by default, [data-theme="light"] override.
-# ---------------------------------------------------------------------------
 THEME_CSS = """
 :root {
     --bg:#0d0d1a; --surface:#141425; --surface2:#1a1a32; --surface3:#1c1c34;
@@ -179,6 +176,7 @@ tr:hover td { background:var(--row-hover) !important; }
 tr.starred-row td { background:var(--row-star) !important; }
 tr.starred-row td:first-child { box-shadow:inset 3px 0 0 var(--star-fill-on); }
 tr.flash-highlight td { animation:flashRow 1.8s ease-out; }
+.accordion-block.flash-highlight .accordion-header { animation:flashRow 1.8s ease-out; }
 @keyframes flashRow { 0% { background:var(--accent) !important; opacity:.35; } 100% { background:inherit; } }
 .col-star { width:2.4rem; text-align:center; }
 .col-date { white-space:nowrap; width:1%; color:var(--text); font-variant-numeric:tabular-nums; }
@@ -188,6 +186,8 @@ tr.flash-highlight td { animation:flashRow 1.8s ease-out; }
 .col-author { white-space:nowrap; color:var(--text-dim); }
 .editable-title { cursor:pointer; border-bottom:1px dashed var(--border2); }
 .editable-title:hover { color:var(--accent); border-bottom-color:var(--accent); }
+.starred-title-link { color:inherit; text-decoration:none; cursor:pointer; border-bottom:1px dashed var(--border2); }
+.starred-title-link:hover { color:var(--accent); border-bottom-color:var(--accent); }
 .col-format { min-width:130px; }
 .star-btn, .r-star { background:none; border:none; cursor:pointer; padding:0; line-height:1; display:inline-flex; }
 .star-btn svg, .r-star svg { width:1.15rem; height:1.15rem; }
@@ -249,16 +249,6 @@ a.volume-link:hover { text-decoration:underline; }
 .fmt-track-btn:hover { opacity:.7; }
 .fmt-track-btn.active { opacity:1; filter:none; background:var(--menu-row-hover); }
 
-/* =====================================================================
-   Mobile (portrait phones and similar narrow viewports)
-   The desktop table layout (many nowrap columns + a title column that
-   still needs real width) doesn't have room to breathe under ~640px --
-   it was forcing the whole page to scroll horizontally instead of just
-   wrapping text. Below that width: tables become stacked cards (one
-   release per card, each cell labeled via its data-label attribute
-   instead of a column header), and the header/nav/filter bars stack
-   into full-width rows instead of trying to stay on one line.
-   ===================================================================== */
 @media (max-width: 640px) {
     body { padding:.85rem .5rem; }
     .container { padding:1rem; border-radius:16px; }
@@ -274,11 +264,6 @@ a.volume-link:hover { text-decoration:underline; }
     .filter-bar { gap:.5rem; }
     .filter-pill { padding:.35rem .8rem; font-size:.75rem; }
 
-    /* Table -> stacked cards. Each <tr> becomes a bordered card; each
-       <td> becomes a labeled row inside it via ::before + data-label
-       (set in the row-rendering JS). Columns that don't need a label
-       (the star toggle and the title itself, which acts as the card's
-       heading) opt out with .no-label. */
     table, thead, tbody, tr, td { display:block; width:100%; }
     thead { display:none; }
     tbody tr {
@@ -300,10 +285,6 @@ a.volume-link:hover { text-decoration:underline; }
     .col-title::before { content:none; }
     .col-format { flex-wrap:wrap; justify-content:flex-end; }
 
-    /* Accordion: let the header wrap instead of squeezing 5 controls
-       onto one line -- title gets its own full-width line, the rest
-       (count / format tracker / status picker / unstar) flow onto the
-       next line together. */
     .accordion-header { flex-wrap:wrap; }
     .accordion-title { flex-basis:100%; white-space:normal; }
     .accordion-count { order:1; }
@@ -312,8 +293,6 @@ a.volume-link:hover { text-decoration:underline; }
 }
 """
 
-# Applied inline in <head>, before first paint, so the page never flashes
-# the wrong theme while the stylesheet/JS loads.
 THEME_INIT_SCRIPT = """
 (function() {
     var saved = localStorage.getItem('booktracker-theme');
@@ -344,9 +323,6 @@ document.getElementById('themeToggle').addEventListener('click', () => {
 });
 """
 
-# Reusable animated dropdown, replacing native <select>. Sizes its SVG
-# border to the actual number of rows so the draw-in animation works for
-# both a 12-row month menu and a 20+-row year menu.
 DROPDOWN_JS = """
 function buildDropdown(root, options, selected, onSelect) {
     const menu = root.querySelector('.dd-menu');
@@ -416,16 +392,10 @@ document.addEventListener('click', () => {
 });
 """
 
-# Single 5-point star path, reused for every star toggle. Fill/stroke are
-# entirely CSS-driven (.star-btn / .star-btn.on), so empty vs. starred is
-# just a class swap -- see the .star-btn / .r-star rules in BASE_CSS.
 STAR_ICON_JS = """
 const STAR_SVG = '<svg viewBox="0 0 24 24"><path d="M12 2.5l2.9 6.26 6.6.87-4.86 4.55 1.28 6.7L12 17.6l-5.92 3.28 1.28-6.7L2.5 9.63l6.6-.87z"/></svg>';
 """
 
-# Status system: icons per status (outline circle / single check / double
-# check / X), the 4-button picker widget, and API calls. Shared verbatim
-# between the year page and the starred page.
 STATUS_JS = """
 const STATUS_LABELS = {to_read: 'To-Read', reading: 'Reading', read: 'Read', dropped: 'Dropped'};
 const STATUS_ORDER = ['to_read', 'reading', 'read', 'dropped'];
@@ -437,7 +407,6 @@ const STATUS_ICONS = {
 };
 
 function statusPickerHTML(kind, key, current) {
-    // kind: 'volume' (releaseId) or 'series' (slug)
     const fn = kind === 'series' ? 'setSeriesStatus' : 'setVolumeStatus';
     return '<span class="status-picker">' + STATUS_ORDER.map(s => `
         <button class="status-btn ${s === current ? 'active' : ''}" data-status="${s}"
@@ -469,25 +438,14 @@ async function setSeriesStatus(slug, status, btnEl) {
 }
 """
 
-# Reusable "list of series, each collapsible to its volumes" renderer.
-# Used by both the Starred page and the year page's status-filtered view.
-# Expects a `releases` array (objects with id/slug/title/volume/date/
-# publisher/ebook/print/audiobook/starred/status) and renders into a
-# given container. Collapsed by default; click a header to expand.
 ACCORDION_JS = """
 function toggleAccordion(headerEl) {
     const block = headerEl.parentElement;
     const wasExpanded = block.classList.contains('expanded');
-    // Exclusive accordion: opening one collapses every other series in
-    // this same list, so the list stays scannable instead of growing
-    // taller with every series you've looked at.
     block.parentElement.querySelectorAll('.accordion-block.expanded').forEach(b => b.classList.remove('expanded'));
     if (!wasExpanded) block.classList.add('expanded');
 }
 
-// Volume numbers can be "11.5", "20.5", etc, so sort numerically rather
-// than as strings ("11.5" < "2" as a string). Non-numeric volume labels
-// sort to the end rather than breaking the whole sort.
 function volNum(v) {
     const n = parseFloat(v);
     return isNaN(n) ? Infinity : n;
@@ -520,27 +478,14 @@ async function toggleFormatTrack(slug, fmt, btnEl) {
 
 function renderAccordion(containerEl, releases, opts) {
     opts = opts || {};
-    // Preserve which series are currently expanded -- a status change
-    // triggers a re-render, and that shouldn't slam the whole list shut.
     const expandedSlugs = new Set(
         Array.from(containerEl.querySelectorAll('.accordion-block.expanded')).map(el => el.dataset.slug)
     );
 
-    // Group by slug, not title -- the same series can have tiny title-text
-    // differences between volumes (e.g. inconsistent capitalization from
-    // the publisher feed), and slug is the actual stable per-series key
-    // used everywhere else (starring, status). Grouping by title text
-    // would silently split one series into two accordion entries.
     const grouped = {};
     for (const r of releases) { (grouped[r.slug] = grouped[r.slug] || []).push(r); }
     const bySlug = {};
     for (const slug of Object.keys(grouped)) {
-        // Sort by volume number first (natural reading order), release
-        // date only as a tiebreaker between same-volume rows (e.g. an
-        // ebook and a later print edition of the same volume). Sorting
-        // by date alone interleaves unrelated things -- e.g. an
-        // audiobook re-release of volume 1 that comes out years later
-        // would land after volume 20 in a pure date sort.
         bySlug[slug] = grouped[slug].sort((a, b) => {
             const va = volNum(a.volume), vb = volNum(b.volume);
             if (va !== vb) return va - vb;
@@ -561,10 +506,6 @@ function renderAccordion(containerEl, releases, opts) {
     for (const slug of slugs) {
         const allVols = bySlug[slug];
         const tracked = allVols[0].format_pref || [];
-        // If the user has picked format(s) to track for this series, only
-        // show/count volumes that have at least one tracked format --
-        // this is what makes "mark the whole series read" actually reach
-        // 100% without needing to touch formats you don't care about.
         const vols = tracked.length
             ? allVols.filter(r => tracked.some(f => r[f]))
             : allVols;
@@ -602,13 +543,7 @@ function renderAccordion(containerEl, releases, opts) {
             if (r.ebook) badges += `<span class="format-badge ebook">Ebook</span>`;
             if (r.print) badges += `<span class="format-badge print">Print</span>`;
             if (r.audiobook) badges += `<span class="format-badge audiobook">Audiobook</span>`;
-            // Show the volume's own title even when it's identical to the
-            // series header above (common for light novels, which often
-            // don't give each volume a distinct name) -- a blank cell reads
-            // as missing data, a repeated title reads as confirmed data.
             const titleText = r.title || seriesLabel;
-            // A manually-added book with no series isn't really "volume 1
-            // of 1" -- it's just a book, so the volume number is noise.
             const isStandaloneManual = r.source === 'manual' && !allVols[0].series_title;
             const volText = isStandaloneManual ? '' : (r.volume || '');
             html += `<tr data-release-id="${r.id}">
@@ -629,20 +564,6 @@ function renderAccordion(containerEl, releases, opts) {
 """
 
 
-
-
-
-# ---------------------------------------------------------------------------
-# Shared "book details" field grid: the same set of editable metadata
-# fields (title, subtitle, author, narrator, series, publisher, runtime,
-# ISBN, cover URL, release date, genres, source, description, plus the
-# ebook/print/audiobook format toggles) is used both on the standalone
-# /add page and in the click-to-edit modal available from any accordion
-# row. One HTML-builder + one DOM-collector, parameterized by an id
-# prefix so the add page and the edit modal never collide if both
-# happen to be present in the DOM (they aren't today, but this keeps it
-# safe if that changes).
-# ---------------------------------------------------------------------------
 BOOK_FIELDS_CSS = """
 .field-grid { display:grid; grid-template-columns:repeat(3, 1fr); gap:1rem 1.2rem; }
 .field-grid .field-wide { grid-column:1 / -1; }
@@ -749,9 +670,6 @@ function collectFormatToggles(prefix) {
     return Array.from(group.querySelectorAll('.format-toggle.active')).map(b => b.dataset.fmt);
 }
 
-// External-detail objects use `series_volume`; the field grid (and the
-// releases table) use plain `volume`. Bridge the two so any hydrated
-// search/detail result can be dropped straight into bookFieldsHTML().
 function detailToFormValues(d) {
     return Object.assign({}, d, {volume: (d.series_volume !== undefined && d.series_volume !== null) ? d.series_volume : (d.volume || '')});
 }
@@ -764,12 +682,6 @@ function escapeAttr(s) {
 }
 """
 
-# ---------------------------------------------------------------------------
-# Click-to-edit modal: available from any accordion row's ✎ button (see
-# ACCORDION_JS above), on both the year page and ★ My Starred. Reuses the
-# exact same field grid as the /add page, prefilled via GET
-# /api/release/<id> and saved via POST /api/release/<id>/update.
-# ---------------------------------------------------------------------------
 EDIT_MODAL_HTML = """
 <div class="modal-overlay" id="editModalOverlay" onclick="if (event.target === this) closeEditModal()">
   <div class="modal-box">
@@ -858,7 +770,7 @@ async function runEditModalSearch() {
         const params = new URLSearchParams({kind, provider, q, author});
         const resp = await fetch('/api/external_search?' + params.toString());
         const data = await resp.json();
-        if (data && data.error) { list.innerHTML = `<div class="modal-empty">${data.error}</div>`; return; }
+        if (data && data.error) { list.innerHTML = `<div class="modal-empty">${escapeHtml(data.error)}</div>`; return; }
         results = Array.isArray(data) ? data : [];
     } catch (e) { results = []; }
     editSearchResults = results;
@@ -893,8 +805,6 @@ async function pickEditModalResult(idx) {
     } catch (e) {
         detail = chosen;
     }
-    // Preserve the id/slug/starred/status of the book being edited --
-    // re-searching updates its metadata, it doesn't replace the row.
     renderEditFields(Object.assign({}, detailToFormValues(detail), {
         id: editReleaseId,
         ebook: detail.ebook !== undefined ? detail.ebook : (kind === 'audiobook' ? 0 : 1),
@@ -944,9 +854,6 @@ async function deleteFromEditModal() {
     closeEditModal();
 }
 
-// -- Draggable modal: drag by the header to reposition, so the dialog
-// can be moved aside to see whatever's behind it. Position resets to
-// centered every time the modal is (re)opened -- see resetModalPosition().
 function resetModalPosition(overlay) {
     const box = overlay.querySelector('.modal-box');
     box.style.position = '';
@@ -1006,12 +913,8 @@ function makeModalDraggable(overlayId) {
 makeModalDraggable('editModalOverlay');
 """
 
+
 def render_year_page(year: int, releases: list, years: list, initial_month: int) -> str:
-    # year/initial_month are always ints from Flask's <int:year> route
-    # converter, but this page interpolates them straight into HTML
-    # below (in the <title>/<h1>), so re-assert that explicitly here
-    # rather than trusting the caller -- an int can never carry HTML/JS,
-    # so this is a genuine sanitizer, not just a formality.
     year = int(year)
     initial_month = int(initial_month)
     months_present = sorted({int(r['date'][5:7]) for r in releases}) or [initial_month]
@@ -1044,6 +947,7 @@ def render_year_page(year: int, releases: list, years: list, initial_month: int)
             {THEME_TOGGLE_HTML}
             <a class="nav-link" href="/" title="Jump to current month/year">🏠 Home</a>
             <a class="nav-link" href="/starred">★ My Starred</a>
+            <a class="nav-link" href="/my_books">📚 My Books</a>
             <a class="nav-link" href="/add">➕ Add Book</a>
             <div class="dd" id="yearDD" data-width="120">
                 <span class="dd-label"></span>
@@ -1165,9 +1069,6 @@ function applyStatusChanges(changed) {{
         if (r2) r2.status = c.status;
     }}
     if (statusFilter) {{
-        // An item that no longer matches the active status filter drops
-        // out of this view entirely (e.g. cascaded from 'read' to something
-        // else) -- everything else just re-renders in place.
         statusViewData = statusViewData.filter(r => r.status === statusFilter);
         renderAccordion(document.getElementById('statusView'), statusViewData, {{
             showUnstar: false,
@@ -1286,7 +1187,9 @@ function render() {{
         html += `<tr class="${{r.starred ? 'starred-row' : ''}}" id="row-${{r.id}}">
             <td class="col-star no-label"><button class="star-btn ${{r.starred ? 'on' : ''}}" onclick="toggleStar('${{r.slug}}')">${{STAR_SVG}}</button></td>
             <td class="col-date" data-label="Date">${{escapeHtml(r.date)}}</td>
-            <td class="col-title no-label">${{escapeHtml(r.title)}}</td>
+            <td class="col-title no-label">${{r.starred
+                ? `<a class="starred-title-link" href="/starred#series-${{encodeURIComponent(r.slug)}}" title="View this series in ★ My Starred">${{escapeHtml(r.title)}}</a>`
+                : escapeHtml(r.title)}}</td>
             <td class="col-vol" data-label="Vol"><a class="volume-link" href="${{escapeAttr(r.url || '#')}}" target="_blank" rel="noopener noreferrer">${{escapeHtml(r.volume || '')}}</a></td>
             <td class="col-publisher" data-label="Publisher">${{escapeHtml(r.publisher || '')}}</td>
             <td class="col-format" data-label="Format">${{badges}}</td>
@@ -1295,9 +1198,6 @@ function render() {{
     document.getElementById('tableBody').innerHTML = html;
 }}
 
-// ---- Search: live-filters the currently visible table AND looks up
-// matches across every year via the DB, shown as a dropdown you can
-// star directly from or jump to with click / Enter / arrow keys. ----
 let searchTimer = null;
 let lastSearchResults = [];
 let kbIndex = -1;
@@ -1378,9 +1278,6 @@ document.addEventListener('click', (e) => {{
     if (!e.target.closest('.search-wrap')) searchResults.style.display = 'none';
 }});
 
-// If we arrived from a search-result link (?month=N#row-ID), land on the
-// right month and highlight the row instead of defaulting to the current
-// month / January.
 (function applyDeepLink() {{
     const params = new URLSearchParams(location.search);
     const monthParam = parseInt(params.get('month'));
@@ -1403,10 +1300,6 @@ document.addEventListener('click', (e) => {{
 
 
 def render_starred_page(releases: list) -> str:
-    """A dedicated page listing every release from every starred series,
-    across all years -- the actual 'track all my starred books' view.
-    Collapsible per-series accordion, its own search box, and a reading
-    status picker at both series and volume level."""
     data_json = _safe_json_for_script(releases)
 
     return f"""<!doctype html>
@@ -1431,6 +1324,7 @@ def render_starred_page(releases: list) -> str:
         <div class="header-right">
             {THEME_TOGGLE_HTML}
             <a class="nav-link" href="/" title="Jump to current month/year">🏠 Home</a>
+            <a class="nav-link" href="/my_books">📚 My Books</a>
             <a class="nav-link" href="/add">➕ Add Book</a>
         </div>
     </div>
@@ -1512,6 +1406,17 @@ document.getElementById('starredSearch').addEventListener('input', (e) => {{
 }});
 
 render();
+
+(function applyDeepLink() {{
+    if (!location.hash.startsWith('#series-')) return;
+    const slug = decodeURIComponent(location.hash.slice('#series-'.length));
+    const block = document.querySelector('.accordion-block[data-slug="' + CSS.escape(slug) + '"]');
+    if (!block) return;
+    document.querySelectorAll('.accordion-block.expanded').forEach(b => b.classList.remove('expanded'));
+    block.classList.add('expanded');
+    block.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+    block.classList.add('flash-highlight');
+}})();
 </script>
 </body>
 </html>"""
@@ -1557,17 +1462,35 @@ ADD_PAGE_CSS = """
     .add-search-row { grid-template-columns:1fr; }
     .add-url-row { flex-direction:column; }
 }
+
+/* ----- My Books page styles ----- */
+.import-row { display:flex; gap:.7rem; align-items:center; }
+.import-row input[type=file] {
+    flex:1; background:var(--bg); color:var(--text); border:1px solid var(--border2);
+    border-radius:10px; padding:.55rem .7rem; font-size:.85rem; font-family:inherit;
+}
+.import-status { margin-top:.7rem; font-size:.85rem; }
+.import-status .ok { color:var(--accent); }
+.import-status .warn { color:var(--status-reading); }
+.import-status .err { color:var(--status-dropped); }
+.import-status ul { margin:.4rem 0 0 1.2rem; font-size:.78rem; color:var(--text-dim); }
+.section-header { display:flex; align-items:center; gap:.6rem; margin:1.4rem 0 .7rem; font-size:1rem; font-weight:600; }
+.section-header .section-count { font-size:.75rem; color:var(--text-dim); font-weight:400; }
+.date-read-input {
+    background:var(--bg); color:var(--text); border:1px solid var(--border2);
+    border-radius:8px; padding:.3rem .5rem; font-size:.82rem; font-family:inherit;
+}
+.date-read-input:focus { outline:none; border-color:var(--accent); }
+.remove-row-btn { background:var(--surface2); border:1px solid var(--border2); color:var(--text-dim); border-radius:40px; padding:.3rem .8rem; font-size:.72rem; cursor:pointer; font-family:inherit; }
+.remove-row-btn:hover { color:var(--status-dropped); border-color:var(--status-dropped); }
+@media (max-width:640px) {
+    .import-row { flex-direction:column; align-items:stretch; }
+}
 """
 BASE_CSS = BASE_CSS + ADD_PAGE_CSS
 
 
 def render_add_page(recent: list) -> str:
-    """Standalone "Add a book" page: search Google Books / Audible /
-    Audnexus, or paste an Amazon/Audible/Google Books/Open Library URL
-    (or a bare ASIN), review & edit the fetched metadata in the same
-    field grid used for editing an existing book, then add it to
-    ★ My Starred. Recently-added items are listed below for quick
-    status changes or undo."""
     recent_json = _safe_json_for_script(recent)
 
     return f"""<!doctype html>
@@ -1593,6 +1516,7 @@ def render_add_page(recent: list) -> str:
             {THEME_TOGGLE_HTML}
             <a class="nav-link" href="/" title="Jump to current month/year">🏠 Home</a>
             <a class="nav-link" href="/starred">★ My Starred</a>
+            <a class="nav-link" href="/my_books">📚 My Books</a>
         </div>
     </div>
 
@@ -1693,7 +1617,7 @@ function onProviderChange() {{
         hint.textContent = '';
     }}
     if (provider === 'hardcover' && providerStatus && !providerStatus.hardcover_configured) {{
-        hint.textContent = 'Hardcover isn\\'t configured yet — set HARDCOVER_API_TOKEN in the server environment (get a free token at hardcover.app/account/api), then restart the app.';
+        hint.textContent = 'Hardcover isn\\'t configured yet — add hardcover_token to config.ini (run: python app.py paths to find it) or set HARDCOVER_API_TOKEN, then restart the app. Free token: hardcover.app/account/api';
     }}
 }}
 
@@ -1710,7 +1634,7 @@ async function runAddSearch() {{
         const params = new URLSearchParams({{kind, provider, q, author}});
         const resp = await fetch('/api/external_search?' + params.toString());
         const data = await resp.json();
-        if (data && data.error) {{ list.innerHTML = `<div class="modal-empty">${{data.error}}</div>`; return; }}
+        if (data && data.error) {{ list.innerHTML = `<div class="modal-empty">${{escapeHtml(data.error)}}</div>`; return; }}
         results = Array.isArray(data) ? data : [];
     }} catch (e) {{ results = []; }}
     if (!results.length) {{
@@ -1746,7 +1670,6 @@ async function pickAddResult(idx) {{
     if (!chosen) return;
     const kind = window._addSearchKind || 'book';
     if (chosen.narrator !== undefined || chosen.subtitle !== undefined) {{
-        // Audnexus search already returns full detail -- no extra hydrate needed.
         fillDetailsForm(chosen, kind);
         return;
     }}
@@ -1873,10 +1796,6 @@ async function loadProviderStatus() {{
     onProviderChange();
 }}
 
-// -- Search-your-library box: finds any book already tracked (synced or
-// manually added) by title, across all years. Manually-added results
-// open the edit modal directly; LNRelease results jump to their year
-// page, same behavior as the equivalent search box on the year page. --
 let librarySearchTimer = null;
 let libraryResults = [];
 let libraryKbIndex = -1;
@@ -1955,6 +1874,253 @@ document.addEventListener('click', (e) => {{
 onProviderChange();
 loadProviderStatus();
 renderRecentList();
+</script>
+</body>
+</html>"""
+
+
+def render_my_books_page(books: list) -> str:
+    """The 'My Books' page: a separate list of books imported from a
+    Goodreads-format CSV export. Grouped into two sections client-side --
+    'Book Read' (date_read present) and 'Unsorted' (date_read empty) --
+    with a per-row <input type="date"> for inline editing. Uses the same
+    shared CSS/layout/header as the other pages; nothing here talks to
+    the LNRelease `releases` table.
+
+    The `books` argument is the full `db.get_imported_books()` result,
+    serialized with `_safe_json_for_script` so a title/author containing
+    `</script>` cannot escape the surrounding tag (same protection as
+    every other page)."""
+    books_json = _safe_json_for_script(books)
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{APP_NAME} — My Books</title>
+<link rel="icon" type="image/png" href="/static/favicon-32.png" sizes="32x32">
+<link rel="icon" type="image/png" href="/static/favicon-64.png" sizes="64x64">
+<script>{THEME_INIT_SCRIPT}</script>
+<style>{BASE_CSS}</style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <div class="header-left">
+            <img class="header-icon" src="/static/icon.png" alt="">
+            <h1>📚 My Books</h1>
+            <span class="version-tag">v{VERSION}</span>
+        </div>
+        <div class="header-right">
+            {THEME_TOGGLE_HTML}
+            <a class="nav-link" href="/" title="Jump to current month/year">🏠 Home</a>
+            <a class="nav-link" href="/starred">★ My Starred</a>
+            <a class="nav-link" href="/add">➕ Add Book</a>
+        </div>
+    </div>
+
+    <div class="add-section">
+        <h2>📥 Import books from CSV</h2>
+        <div class="import-row">
+            <input type="file" id="csvFile" accept=".csv,text/csv">
+            <button class="add-btn primary" id="importBtn" onclick="importCsv()">Import</button>
+        </div>
+        <div class="add-hint">
+            Accepts a Goodreads CSV export. Only <b>Title</b>, <b>Author</b>,
+            <b>Publisher</b>, <b>Year Published</b>, and <b>Date Read</b> are imported;
+            all other columns are ignored. Books with a Date Read land under
+            <b>Book Read</b>; books without one land under <b>Unsorted</b>.
+        </div>
+        <div id="importStatus" class="import-status"></div>
+    </div>
+
+    <div class="nav-bar">
+        <div class="search-wrap" style="flex:1;">
+            <input id="booksSearch" type="text" placeholder="Filter by title, author, or publisher..." autocomplete="off">
+        </div>
+        <span id="countLabel" style="font-size:.8rem;color:var(--text-dim);white-space:nowrap;"></span>
+    </div>
+
+    <div id="content"></div>
+</div>
+
+<script>
+{THEME_TOGGLE_JS}
+
+let books = {books_json};
+let filterText = '';
+
+function escapeHtml(s) {{
+    return String(s == null ? '' : s).replace(/[&<>]/g, c => ({{'&': '&amp;', '<': '&lt;', '>': '&gt;'}}[c]));
+}}
+function escapeAttr(s) {{
+    return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({{'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}}[c]));
+}}
+
+async function importCsv() {{
+    const fileInput = document.getElementById('csvFile');
+    const file = fileInput.files[0];
+    const status = document.getElementById('importStatus');
+    if (!file) {{ alert('Pick a CSV file first.'); return; }}
+    status.innerHTML = '<span class="ok">Importing…</span>';
+    const fd = new FormData();
+    fd.append('file', file);
+    let data;
+    try {{
+        const resp = await fetch('/api/import_books_csv', {{method: 'POST', body: fd}});
+        if (!resp.ok) {{
+            let msg = 'Import failed';
+            try {{
+                const j = await resp.json();
+                msg = j.error || j.message || msg;
+            }} catch (e) {{}}
+            status.innerHTML = `<span class="err">${{escapeHtml(msg)}}</span>`;
+            return;
+        }}
+        data = await resp.json();
+    }} catch (e) {{
+        status.innerHTML = '<span class="err">Could not upload — check your connection and try again.</span>';
+        return;
+    }}
+
+    // Pull the fresh full list to reflect what was actually committed.
+    let refreshed = false;
+    try {{
+        const resp = await fetch('/api/imported_books');
+        if (resp.ok) {{ books = await resp.json(); refreshed = true; }}
+    }} catch (e) {{}}
+
+    let html = `<span class="ok">✓ Imported: ${{data.added}} new`;
+    if (data.skipped) html += `, ${{data.skipped}} duplicate(s) skipped`;
+    if (data.skipped_rows) html += `, ${{data.skipped_rows}} row(s) with no title skipped`;
+    if (data.errors) html += `, ${{data.errors}} error(s)`;
+    html += '.</span>';
+    if (!refreshed) html += ' <span class="warn">(reload the page to see the new items)</span>';
+    if (data.warnings && data.warnings.length) {{
+        html += '<ul>' + data.warnings.slice(0, 20).map(w => `<li>${{escapeHtml(w)}}</li>`).join('') + '</ul>';
+        if (data.warnings.length > 20) html += `<div class="add-hint">…and ${{data.warnings.length - 20}} more warnings</div>`;
+    }}
+    status.innerHTML = html;
+    fileInput.value = '';
+    render();
+}}
+
+async function setDateRead(id, value) {{
+    // <input type="date"> always gives YYYY-MM-DD or "", so this is
+    // belt-and-suspenders — but it also makes "cleared input" round-trip
+    // to `null` (→ Unsorted) exactly as intended.
+    let iso = value;
+    if (iso && !/^\\d{{4}}-\\d{{2}}-\\d{{2}}$/.test(iso)) iso = null;
+    if (!iso) iso = null;
+    let resp;
+    try {{
+        resp = await fetch(`/api/imported_book/${{id}}/update`, {{
+            method: 'POST', headers: {{'Content-Type': 'application/json'}},
+            body: JSON.stringify({{date_read: iso}})
+        }});
+    }} catch (e) {{
+        alert('Could not save — check your connection and try again.');
+        return;
+    }}
+    if (!resp.ok) {{
+        alert('Could not save that date. Check the format (YYYY-MM-DD).');
+        return;
+    }}
+    const row = await resp.json();
+    const book = books.find(b => b.id === id);
+    if (book) {{ book.date_read = row.date_read; }}
+    render();
+}}
+
+async function removeBook(id) {{
+    if (!confirm('Remove this book from My Books?')) return;
+    let resp;
+    try {{
+        resp = await fetch(`/api/imported_book/${{id}}/remove`, {{method: 'POST'}});
+    }} catch (e) {{
+        alert('Could not remove — check your connection and try again.');
+        return;
+    }}
+    if (!resp.ok) {{ alert('Could not remove.'); return; }}
+    books = books.filter(b => b.id !== id);
+    render();
+}}
+
+function render() {{
+    const q = filterText.toLowerCase();
+    const filtered = q
+        ? books.filter(b => ((b.title || '') + ' ' + (b.author || '') + ' ' + (b.publisher || '')).toLowerCase().includes(q))
+        : books;
+    const read = filtered.filter(b => b.date_read)
+        .sort((a, b) => b.date_read < a.date_read ? -1 : b.date_read > a.date_read ? 1 : 0);
+    const unsorted = filtered.filter(b => !b.date_read)
+        .sort((a, b) => (a.title || '') < (b.title || '') ? -1 : (a.title || '') > (b.title || '') ? 1 : 0);
+
+    document.getElementById('countLabel').textContent = books.length + ' books total';
+
+    const content = document.getElementById('content');
+    if (!books.length) {{
+        content.innerHTML = '<div class="empty-state">No books imported yet. Use the form above to import a CSV.</div>';
+        return;
+    }}
+    if (!filtered.length) {{
+        content.innerHTML = '<div class="empty-state">No books match that search.</div>';
+        return;
+    }}
+
+    function rowHtml(b) {{
+        return `<tr data-id="${{b.id}}">
+            <td class="col-title" data-label="Title">${{escapeHtml(b.title || '')}}</td>
+            <td class="col-author" data-label="Author">${{escapeHtml(b.author || '')}}</td>
+            <td class="col-publisher" data-label="Publisher">${{escapeHtml(b.publisher || '')}}</td>
+            <td class="col-date" data-label="Date Published">${{escapeHtml(b.date_published || '')}}</td>
+            <td class="col-status" data-label="Date Read">
+                <input type="date" class="date-read-input" value="${{escapeAttr(b.date_read || '')}}"
+                    onchange="setDateRead(${{b.id}}, this.value)">
+            </td>
+            <td class="col-edit"><button class="remove-row-btn" onclick="removeBook(${{b.id}})">Remove</button></td>
+        </tr>`;
+    }}
+
+    let html = '';
+    if (read.length) {{
+        html += `<div class="section-header">📖 Book Read <span class="section-count">(${{read.length}})</span></div>
+        <table>
+            <thead><tr>
+                <th class="col-title">Title</th>
+                <th class="col-author">Author</th>
+                <th class="col-publisher">Publisher</th>
+                <th class="col-date">Date Published</th>
+                <th class="col-status">Date Read</th>
+                <th class="col-edit"></th>
+            </tr></thead>
+            <tbody>${{read.map(rowHtml).join('')}}</tbody>
+        </table>`;
+    }}
+    if (unsorted.length) {{
+        html += `<div class="section-header">📚 Unsorted <span class="section-count">(${{unsorted.length}})</span></div>
+        <table>
+            <thead><tr>
+                <th class="col-title">Title</th>
+                <th class="col-author">Author</th>
+                <th class="col-publisher">Publisher</th>
+                <th class="col-date">Date Published</th>
+                <th class="col-status">Date Read</th>
+                <th class="col-edit"></th>
+            </tr></thead>
+            <tbody>${{unsorted.map(rowHtml).join('')}}</tbody>
+        </table>`;
+    }}
+    content.innerHTML = html;
+}}
+
+document.getElementById('booksSearch').addEventListener('input', (e) => {{
+    filterText = e.target.value.trim();
+    render();
+}});
+
+render();
 </script>
 </body>
 </html>"""
