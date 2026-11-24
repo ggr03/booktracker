@@ -528,6 +528,29 @@ star/status persistence that survives regeneration entirely. So: yes,
 worth it — but the win is on the read/write/maintenance side, not raw
 page-rendering speed.
 
+## Web server
+
+`python app.py serve` runs the Flask app on
+[Waitress](https://docs.pylonsproject.org/projects/waitress/), a
+production-grade WSGI server and one of the servers Flask's own
+deployment docs recommend. Waitress was chosen because it's the one
+option that runs the same way on every platform this app supports:
+
+| Server | Linux / macOS | Windows | Notes |
+|---|---|---|---|
+| **Waitress** (used) | ✅ | ✅ | Pure Python, no extra dependencies, runs Flask directly |
+| Gunicorn | ✅ | ❌ | Needs Unix `fork()`, so it won't start on Windows |
+| Uvicorn | ✅ | ⚠️ | An ASGI server for async frameworks. Flask needs an adapter and gains nothing |
+
+Flask's built-in development server is only used with `serve --debug`,
+which turns on auto-reload and verbose logs. Werkzeug's interactive
+debugger is never enabled.
+
+If you ever expose the app beyond your home network, put it behind a
+reverse proxy that adds a login (for example Caddy or nginx with basic
+auth), or reach it over a VPN such as Tailscale. The app itself has no
+login.
+
 ## Network access
 
 By default the server only listens on `127.0.0.1`, so only the computer
