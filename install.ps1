@@ -13,8 +13,8 @@ param([switch]$Lan, [int]$Port = 0)
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 
-# 1. Find Python >= 3.9 (the py launcher first, then python on PATH).
-$check = 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)'
+# 1. Find Python >= 3.11 (the py launcher first, then python on PATH).
+$check = 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)'
 $pyExe = $null; $pyArgs = @()
 if (Get-Command py -ErrorAction SilentlyContinue) {
     & py -3 -c $check 2>$null
@@ -25,7 +25,7 @@ if (-not $pyExe -and (Get-Command python -ErrorAction SilentlyContinue)) {
     if ($LASTEXITCODE -eq 0) { $pyExe = 'python' }
 }
 if (-not $pyExe) {
-    Write-Error "Python 3.9+ not found. Install it from https://www.python.org/downloads/windows/ or run: winget install Python.Python.3.12"
+    Write-Error "Python 3.11+ not found. Install it from https://www.python.org/downloads/windows/ or run: winget install Python.Python.3.14"
 }
 
 # 2. Virtualenv + dependencies.

@@ -21,7 +21,7 @@ Settings come from, highest priority first:
   3. built-in defaults
 
 Only the standard library is used here (configparser, not tomllib), so
-this works on every Python from 3.9 -- e.g. RHEL 9's stock python3.
+this has no dependencies beyond Python itself (3.11+).
 """
 from __future__ import annotations
 

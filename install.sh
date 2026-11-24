@@ -19,20 +19,24 @@ if [ ! -f app.py ]; then
     exit 1
 fi
 
-# 1. Find a Python >= 3.9.
+# 1. Find a Python >= 3.11 (the oldest release still getting security fixes).
 PY=""
-for cand in python3.13 python3.12 python3.11 python3.10 python3.9 python3; do
+for cand in python3.14 python3.13 python3.12 python3.11 python3; do
     if command -v "$cand" >/dev/null 2>&1 &&
-       "$cand" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null; then
+       "$cand" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
         PY="$cand"; break
     fi
 done
 if [ -z "$PY" ]; then
-    echo "ERROR: Python 3.9 or newer is required. Install it with:" >&2
-    if   command -v apt-get >/dev/null 2>&1; then echo "  sudo apt install python3 python3-venv" >&2
-    elif command -v dnf     >/dev/null 2>&1; then echo "  sudo dnf install python3" >&2
-    elif command -v yum     >/dev/null 2>&1; then echo "  sudo yum install python39" >&2
-    elif [ "$(uname)" = "Darwin" ];        then echo "  xcode-select --install   (or: brew install python)" >&2
+    echo "ERROR: Python 3.11 or newer is required. Install it with:" >&2
+    if   command -v apt-get >/dev/null 2>&1; then
+        echo "  sudo apt install python3 python3-venv   (Debian 12+, Ubuntu 24.04+, MX 23+)" >&2
+    elif command -v dnf     >/dev/null 2>&1; then
+        echo "  sudo dnf install python3.12 python3.12-pip   (RHEL/Rocky/Alma 8 and 9)" >&2
+        echo "  sudo dnf install python3                     (RHEL 10, Fedora)" >&2
+    elif [ "$(uname)" = "Darwin" ]; then
+        echo "  brew install python   (or the installer from https://www.python.org/downloads/macos/)" >&2
+        echo "  Note: the python3 from Xcode Command Line Tools is 3.9 and too old." >&2
     fi
     exit 1
 fi

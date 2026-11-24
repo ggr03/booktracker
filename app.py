@@ -22,11 +22,16 @@ why this needs to be a running server rather than a static HTML file.
 """
 from __future__ import annotations
 
+import sys
+
+if sys.version_info < (3, 11):
+    sys.exit(f"Book Tracker needs Python 3.11 or newer (this is {sys.version.split()[0]}). "
+             "See README.md > Setup for how to install it on your OS.")
+
 import argparse
 import datetime
 import ipaddress
 import socket
-import sys
 import threading
 import time
 from pathlib import Path

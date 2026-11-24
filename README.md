@@ -38,6 +38,8 @@ small `v2026.11.24-01`-style tag in the header on every page).
 
 - **2026.11.24-01** — Cross-platform release: Debian/Ubuntu/MX,
   RHEL/Rocky/Alma/Fedora, macOS, and Windows.
+  - **Minimum Python is now 3.11** (was 3.9; 3.9 and 3.10 no longer get
+    security fixes). Tested on 3.11 through 3.14.
   - New `python app.py install-service` sets up autostart for each OS
     (systemd user unit, XDG autostart when systemd isn't running,
     a macOS launchd agent, or a Windows Startup shortcut). `install.sh`
@@ -157,9 +159,11 @@ small `v2026.11.24-01`-style tag in the header on every page).
 
 ## Requirements
 
-- **Python 3.9 or newer**, on Windows, macOS, or Linux — the app is
-  pure Python (Flask + SQLite), nothing platform-specific.
-- The packages listed in `requirements.txt` (Flask, requests) — installed
+- **Python 3.11 or newer** (tested up to 3.14), on Windows, macOS, or
+  Linux. The app is pure Python (Flask + Waitress + SQLite), with nothing
+  platform-specific. 3.11 is the oldest Python release that still gets
+  security fixes.
+- The packages listed in `requirements.txt` (Flask, requests, Waitress) — installed
   with `pip` in the setup steps below.
 - **A free Hardcover API token, if you want search to work out of the
   box.** Hardcover is the default (and richest) search provider on the
@@ -209,7 +213,7 @@ unauthenticated rate limit.
 
 Get the code (`git clone https://github.com/ggr03/booktracker`, or
 download and extract the ZIP), open a terminal in the `booktracker` folder, and run the installer
-for your OS. Each installer does the same five things: finds Python 3.9+,
+for your OS. Each installer does the same five things: finds Python 3.11+,
 creates `venv/`, installs dependencies, creates a private `config.ini`,
 runs the first sync, and sets the app to start automatically when you
 log in.
@@ -229,29 +233,32 @@ systemd user service, and SysVinit boots get a desktop autostart entry.
 ### RHEL, Rocky, AlmaLinux, CentOS Stream, Fedora
 
 ```bash
-sudo dnf install python3 python3-pip
+sudo dnf install python3.12 python3.12-pip   # RHEL/Rocky/Alma 8 and 9
+sudo dnf install python3 python3-pip         # RHEL 10 and Fedora
 ./install.sh
 ```
 
-RHEL 8 ships Python 3.6 by default, so run `sudo dnf install python39`
-first; the installer finds `python3.9` automatically. If you use `--lan`,
-the installer prints the `firewall-cmd` command that opens the port.
+The default `python3` on RHEL 8 and 9 (3.6 and 3.9) is too old. The
+extra `python3.12` package installs alongside it without replacing it,
+and the installer finds it automatically. If you use `--lan`, the
+installer prints the `firewall-cmd` command that opens the port.
 
 ### macOS
 
 ```bash
-xcode-select --install
+brew install python
 ./install.sh
 ```
 
-If you prefer Homebrew's Python, run `brew install python` instead of
-`xcode-select --install`. The app runs as a launchd agent. Logs are in
+You can use the installer from python.org instead of Homebrew. The
+`python3` that comes with Xcode Command Line Tools is 3.9, which is too
+old. The app runs as a launchd agent. Logs are in
 `~/Library/Logs/Book Tracker/`.
 
 ### Windows 10 / 11
 
-Install Python 3.9+ from python.org (tick **Add python.exe to PATH**), or
-run `winget install Python.Python.3.12`. Then, in PowerShell:
+Install Python 3.11+ from python.org (tick **Add python.exe to PATH**), or
+run `winget install Python.Python.3.14`. Then, in PowerShell:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install.ps1
@@ -677,4 +684,4 @@ venv/bin/python -m unittest discover -s tests -v
 ```
 
 CI (`.github/workflows/ci.yml`) runs the tests on Ubuntu, Debian, Rocky
-Linux 9, macOS, and Windows: Python 3.9 on Rocky 9, 3.10 and 3.13 elsewhere.
+Linux 9, macOS, and Windows, on Python 3.11 (the minimum) and 3.14.
