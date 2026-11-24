@@ -1,7 +1,0 @@
-[Unit]
-Description=Book Tracker data sync (fetch LNRelease books.csv into the DB)
-
-[Service]
-Type=oneshot
-WorkingDirectory=%h/booktracker_app
-ExecStart=%h/booktracker_app/venv/bin/python %h/booktracker_app/app.py sync

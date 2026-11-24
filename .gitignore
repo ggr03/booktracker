@@ -13,3 +13,22 @@ __pycache__/
 
 # OS
 .DS_Store
+
+# Secrets -- anything that looks like a personal copy of a unit/env
+# file with real credentials filled in. install.sh's own units
+# (booktracker.service etc.) stay tracked since they're templates with
+# no secrets in them; it's *copies* of them with a real token added
+# that must never be committed.
+*.apikey
+*api-key*
+*.env
+.env*
+*secret*
+*token*
+
+# Per-DB sync timestamp written by the built-in auto-sync
+*.last-sync
+# Old systemd unit (held a real token) and scratch output
+booktracker.service
+err.txt
+config.ini

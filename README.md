@@ -15,6 +15,13 @@ Everything you star — synced or manually added — lives together on the
 **★ My Starred** page, grouped by series, with a reading-status tracker
 (To-Read / Reading / Read / Dropped).
 
+Separately, the **📚 My Books** page lets you import a Goodreads CSV
+export as a completely separate list. Only Title, Author, Publisher,
+Year Published, and Date Read are imported; rows with a Date Read are
+grouped under **Book Read**, rows without under **Unsorted**, and each
+row's Date Read is editable inline. My Books data never mixes with
+★ My Starred or the LNRelease year pages.
+
 Book Tracker was previously called **LNRelease**; if you're upgrading an
 existing install, see [Upgrading from LNRelease](#upgrading-from-lnrelease)
 below — your data carries over automatically.
@@ -25,10 +32,50 @@ below — your data carries over automatically.
 increments if more than one release ships the same day. The current
 version lives in one place, `version.py`, so bumping it for a new release
 is a one-line change and every page picks it up automatically (see the
-small `v2026.08.06-01`-style tag in the header on every page).
+small `v2026.11.24-01`-style tag in the header on every page).
 
 ### Changelog
 
+- **2026.11.24-01** — Cross-platform release: Debian/Ubuntu/MX,
+  RHEL/Rocky/Alma/Fedora, macOS, and Windows.
+  - New `python app.py install-service` sets up autostart for each OS
+    (systemd user unit, XDG autostart when systemd isn't running,
+    a macOS launchd agent, or a Windows Startup shortcut). `install.sh`
+    (Linux/macOS) and `install.ps1` (Windows) wrap it.
+  - The daily LNRelease sync now runs inside the server, so the separate
+    `booktracker-sync.timer` is gone (the installer removes the old one).
+  - API tokens move to a private `config.ini` in your per-user config
+    folder; they're never kept in the app folder or a unit file again.
+    Reinstalling moves an existing token out of the old unit
+    automatically.
+  - New installs keep the database in the per-user data folder; existing
+    installs keep using `booktracker.db` next to `app.py`.
+  - Security: the server listens on `127.0.0.1` unless you pass `--lan`;
+    cross-site POSTs (CSRF) and unknown `Host` names (DNS rebinding) are
+    rejected; Amazon URL fetches re-check every redirect.
+  - Served by Waitress instead of Flask's development server. The DB
+    schema check runs once per process instead of on every request.
+  - New `paths` and `init-config` commands, plus a cross-platform smoke
+    test suite and a CI run on Ubuntu, Rocky Linux, macOS, and Windows.
+- **2026.08.11-01** — Added **📚 My Books**, a new page (linked from every
+  header, next to ★ My Starred) for importing a Goodreads-format CSV
+  export. Only five fields are kept — Title, Author, Publisher,
+  Year Published, Date Read — and every other Goodreads column is
+  ignored. Rows with a Date Read land under **Book Read**; rows
+  without one land under **Unsorted**. Each row's Date Read is
+  editable inline (native `<input type="date">`), and setting/clearing
+  it immediately moves the book between the two groups. A search box
+  filters across both groups by title/author/publisher. This data
+  lives in its own `imported_books` SQLite table, fully separate from
+  LNRelease-synced and manually-added books (duplicates between My
+  Books and My Starred are expected and allowed). Re-importing the
+  same CSV is idempotent: duplicate rows are silently skipped.
+  Security-wise: the import endpoint is capped at a 20 MB / 50,000-row
+  CSV with a 25 MB global request-body cap, all rendering goes through
+  the same `escapeHtml`/`_safe_json_for_script` escaping as the rest
+  of the app, upload/import errors return fixed human-written messages
+  (never raw exception text), and the CSV parser uses only bounded
+  regexes.
 - **2026.08.10-01** — Security pass ahead of making this repo public:
   fixed an SSRF hole in the Amazon-URL-fetch feature (strict hostname
   validation, not just a substring check), 12 ReDoS-shaped regexes
@@ -129,8 +176,8 @@ small `v2026.08.06-01`-style tag in the header on every page).
   below.
 
 No API key is ever required just to browse and star LNRelease release
-data (the `sync` / calendar / ★ My Starred pages) — keys only matter for
-the ➕ Add Book search.
+data (the `sync` / calendar / ★ My Starred pages) or to use 📚 My Books —
+keys only matter for the ➕ Add Book search.
 
 ### Getting a Hardcover API token
 
@@ -160,56 +207,116 @@ unauthenticated rate limit.
 
 ## Setup
 
-Clone or download this repository, then follow the steps for your
-platform below. Both do the same three things: create an isolated
-Python environment, install dependencies, and (optionally) set your
-API key(s) for that terminal session.
+Get the code (`git clone https://github.com/ggr03/booktracker`, or
+download and extract the ZIP), open a terminal in the `booktracker` folder, and run the installer
+for your OS. Each installer does the same five things: finds Python 3.9+,
+creates `venv/`, installs dependencies, creates a private `config.ini`,
+runs the first sync, and sets the app to start automatically when you
+log in.
 
-### Linux / macOS
+Afterwards, open **http://127.0.0.1:7077**.
+
+### Debian, Ubuntu, MX Linux, Mint
 
 ```bash
-git clone https://github.com/ggr03/booktracker
-cd booktracker
-
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-
-# Optional but recommended -- see Requirements above:
-export HARDCOVER_API_TOKEN="eyJhbGciOi..."
-# export GOOGLE_BOOKS_API_KEY="..."          # optional
+sudo apt install python3 python3-venv
+./install.sh
 ```
 
-### Windows (PowerShell)
+On MX Linux this works with either init system: systemd boots get a
+systemd user service, and SysVinit boots get a desktop autostart entry.
+
+### RHEL, Rocky, AlmaLinux, CentOS Stream, Fedora
+
+```bash
+sudo dnf install python3 python3-pip
+./install.sh
+```
+
+RHEL 8 ships Python 3.6 by default, so run `sudo dnf install python39`
+first; the installer finds `python3.9` automatically. If you use `--lan`,
+the installer prints the `firewall-cmd` command that opens the port.
+
+### macOS
+
+```bash
+xcode-select --install
+./install.sh
+```
+
+If you prefer Homebrew's Python, run `brew install python` instead of
+`xcode-select --install`. The app runs as a launchd agent. Logs are in
+`~/Library/Logs/Book Tracker/`.
+
+### Windows 10 / 11
+
+Install Python 3.9+ from python.org (tick **Add python.exe to PATH**), or
+run `winget install Python.Python.3.12`. Then, in PowerShell:
 
 ```powershell
-git clone <this-repo-url>
-cd booktracker
-
-python -m venv venv
-venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-
-# Optional but recommended -- see Requirements above:
-$env:HARDCOVER_API_TOKEN = "eyJhbGciOi..."
-# $env:GOOGLE_BOOKS_API_KEY = "..."          # optional
+powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-If PowerShell blocks the activation script, run PowerShell as
-Administrator once and allow local scripts:
-`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`. Using Command
-Prompt instead of PowerShell? Activate with `venv\Scripts\activate.bat`
-and set variables with `set HARDCOVER_API_TOKEN=eyJhbGciOi...`.
+The server runs in the background with no console window, from a
+shortcut in your Startup folder. No admin rights are needed. Logs are in
+`%LOCALAPPDATA%\BookTracker\logs\`.
 
-Environment variables set this way only last for the current terminal
-session — you'll need to re-set them (or use Windows' System Properties
-→ Environment Variables for a permanent one) each time you open a new
-terminal to run the app.
+### Network access (optional)
+
+By default only this computer can open the app. Add `--lan` to the
+installer to serve it on your network too. Read
+[Network access](#network-access) first, because the app has no login.
+
+### Running it by hand, without autostart
+
+```bash
+python3 -m venv venv
+venv/bin/pip install -r requirements.txt        # Windows: venv\Scripts\pip
+venv/bin/python app.py serve                     # Windows: venv\Scripts\python app.py serve
+```
+
+### Uninstalling
+
+Run `./uninstall.sh` on Linux or macOS, or `.\uninstall.ps1` on Windows.
+This removes only the autostart entry. Your database, `config.ini`, and
+the app folder stay where they are.
+
+## Where your files live
+
+Run `python app.py paths` to print the exact locations on your machine.
+
+| | Linux | macOS | Windows |
+|---|---|---|---|
+| `config.ini` | `~/.config/booktracker/` | `~/Library/Application Support/Book Tracker/` | `%APPDATA%\BookTracker\` |
+| Database | `~/.local/share/booktracker/` | `~/Library/Application Support/Book Tracker/` | `%LOCALAPPDATA%\BookTracker\` |
+
+If `booktracker.db` (or an old `lnrelease.db`) already sits next to
+`app.py`, it keeps being used in place. To move it into the standard
+folder, stop the app, move the file there, and start the app again.
+You can also point anywhere you like with `--db`, `BOOKTRACKER_DB`, or
+`[database] path` in `config.ini`.
+
+## Configuration reference
+
+All settings are in `config.ini`. An environment variable with the same
+meaning overrides the file.
+
+| Setting | Env var | Default |
+|---|---|---|
+| `[api] hardcover_token` | `HARDCOVER_API_TOKEN` | *(empty)* |
+| `[api] google_books_key` | `GOOGLE_BOOKS_API_KEY` | *(empty)* |
+| `[server] host` | `BOOKTRACKER_HOST` | `127.0.0.1` |
+| `[server] port` | `BOOKTRACKER_PORT` | `7077` |
+| `[server] allowed_hosts` | `BOOKTRACKER_ALLOWED_HOSTS` | *(empty)* |
+| `[sync] auto_sync` | `BOOKTRACKER_AUTO_SYNC` | `true` |
+| `[sync] interval_hours` | `BOOKTRACKER_SYNC_HOURS` | `24` |
+| `[database] path` | `BOOKTRACKER_DB` | see above |
 
 ## Usage
 
-Run these from inside the activated virtual environment, on any
-platform:
+If you used the installer, the server is already running and you don't
+need any of this. To run things by hand, use the venv's Python
+(`venv/bin/python` on Linux/macOS, `venv\Scripts\python` on Windows):
 
 ```
 # 1. Pull the latest release data from LNRelease's books.csv into the DB.
@@ -218,8 +325,10 @@ python app.py sync
 
 # 2. Start the local server.
 python app.py serve
-# -> http://127.0.0.1:7077 (and reachable from other devices on your LAN --
-#    the app prints the exact network URL to visit)
+# -> http://127.0.0.1:7077  (add --lan to also serve on your network)
+
+# Show where the DB, config.ini and logs live on this OS:
+python app.py paths
 
 # Print the version and exit:
 python app.py --version
@@ -227,30 +336,12 @@ python app.py --version
 
 Open that URL in a browser. It redirects to the most recent year with data.
 
-Re-run `python app.py sync` whenever you want fresh LNRelease data (e.g.
-weekly via cron / Task Scheduler, or the included `booktracker-sync.timer`
-if you used `install.sh` on Linux). It's cheap and idempotent — a no-op
-sync writes zero rows. Nothing you added yourself via the Add Book page
-is touched by `sync` — that only ever writes LNRelease-sourced rows.
-
-**Windows and macOS note:** `install.sh` and the three `booktracker*`
-unit files (`.service` / `.timer`) are a Linux-only convenience — they
-install this app as a `systemd --user` background service so it starts
-automatically and stays running. They're simply not applicable on
-Windows or macOS, where there's no systemd. On those platforms, just run
-`python app.py serve` from a terminal whenever you want to use the app.
-If you'd like it to start automatically or sync on a schedule instead,
-the native equivalents are:
-
-- **macOS**: a `launchd` user agent (`~/Library/LaunchAgents/*.plist`),
-  or a `cron` entry (`crontab -e`) for periodic `python app.py sync` runs.
-- **Windows**: an entry in **Task Scheduler** that runs
-  `venv\Scripts\python.exe app.py serve` (or `sync`) — either at logon
-  for the server, or on a daily trigger for sync.
-
-Neither is included in this repo since the exact setup depends on where
-you place the app and how you manage your Python environment, but both
-are standard OS features and only take a couple of minutes to set up.
+While the server is running it re-syncs LNRelease data on its own once a
+day (`[sync]` in `config.ini`; turn it off with `--no-auto-sync`). Running
+`python app.py sync` by hand also works any time. Syncing is cheap and
+safe to repeat: a sync with nothing new writes zero rows. Books you added
+yourself on the Add Book page are never touched, because sync only
+writes LNRelease rows.
 
 ## Adding a book yourself
 
@@ -279,18 +370,18 @@ repo and should never be committed to one:
 
 1. Go to [hardcover.app/account/api](https://hardcover.app/account/api)
    and copy your token (it's a long `Bearer eyJ...` string).
-2. Set it as an environment variable before starting the server — don't
-   paste it into any `.py` file:
+2. Put it in your private `config.ini` (`python app.py paths` shows
+   where it is, and `python app.py init-config` creates it). Don't paste
+   it into any `.py` file:
+   ```ini
+   [api]
+   hardcover_token = eyJhbGciOi...   # with or without the "Bearer " prefix
    ```
-   export HARDCOVER_API_TOKEN="eyJhbGciOi..."   # the token, with or without the "Bearer " prefix
-   python app.py serve
-   ```
-   Running as a systemd service (`install.sh`)? Add it to
-   `booktracker.service`'s `[Service]` section instead:
-   ```
-   Environment=HARDCOVER_API_TOKEN=eyJhbGciOi...
-   ```
-   then `systemctl --user daemon-reload && systemctl --user restart booktracker.service`.
+   The `HARDCOVER_API_TOKEN` environment variable also works and
+   overrides the file. On Linux and macOS, `config.ini` is created
+   readable only by your account (mode 600). Older installs that kept the
+   token in `booktracker.service` have it moved here automatically when
+   you re-run the installer.
 3. Restart the app. The Add page will stop showing the "Hardcover isn't
    configured" hint once it picks up the token.
 
@@ -432,24 +523,31 @@ page-rendering speed.
 
 ## Network access
 
-The server binds to `0.0.0.0` by default, so it's reachable from other
-devices on your LAN, not just this machine. On startup it prints both
-URLs:
+By default the server only listens on `127.0.0.1`, so only the computer
+running it can open the app. To use it from your phone or another PC,
+use `--lan` (`./install.sh --lan`, `.\install.ps1 -Lan`, or
+`python app.py serve --lan`), or set `host = 0.0.0.0` in `config.ini`.
+On startup it prints both URLs:
 
 ```
 Local:   http://127.0.0.1:7077
 Network: http://192.168.1.23:7077
 ```
 
-If it's not reachable from another device, check your firewall (e.g.
-MX Linux's gufw/ufw) — you may need to allow the port:
+**The app has no login**, so anyone on that network can edit your data.
+Only turn this on for a network you trust. Open the app by IP address,
+or list host names such as `mybox.lan` under `allowed_hosts` in
+`config.ini`. Unknown host names are refused, as a defence against DNS
+rebinding.
 
-```
-sudo ufw allow 7077/tcp
-```
+If another device can't reach it, open the port in your firewall:
 
-To go back to localhost-only, pass `--host 127.0.0.1` (or edit the
-`--host` value in `booktracker.service` if running as a service).
+| OS | Command |
+|---|---|
+| Debian / Ubuntu / MX (ufw) | `sudo ufw allow 7077/tcp` |
+| RHEL / Rocky / Alma / Fedora (firewalld) | `sudo firewall-cmd --permanent --add-port=7077/tcp && sudo firewall-cmd --reload` |
+| Windows | Allow Python on **Private** networks when Windows Firewall asks |
+| macOS | Allow incoming connections for Python when asked |
 
 ## Upgrading from LNRelease
 
@@ -464,10 +562,17 @@ the new version, no manual steps needed:
   ISBN, cover URL, genres, description, language, and a couple of
   internal bookkeeping fields) are added via `ALTER TABLE` automatically;
   existing rows just get `NULL` for the new fields until you edit them.
-- **systemd units**: `install.sh` installs the new `booktracker.service` /
-  `booktracker-sync.service` / `booktracker-sync.timer` names.
-  `uninstall.sh` also cleans up the old `lnrelease.*` unit names if
-  they're still present, so you don't end up with both running.
+- **systemd units**: re-running `install.sh` replaces the old units. It
+  removes `booktracker-sync.service` / `.timer` (syncing now happens
+  inside the server) and the old `lnrelease.*` names, and moves a
+  `HARDCOVER_API_TOKEN` from the old unit into `config.ini`.
+- **Database location**: an existing `booktracker.db` next to `app.py`
+  keeps being used in place. New installs use the per-user data folder
+  (see [Where your files live](#where-your-files-live)).
+
+**One behaviour change in 2026.11.24-01:** the server used to listen on
+the network (`0.0.0.0`) by default. It now listens on this computer only.
+Re-install with `--lan` if you open it from other devices.
 
 The one thing that *doesn't* carry over automatically is the port, if you
 had anything (a firewall rule, a bookmark, a reverse-proxy config)
@@ -477,37 +582,36 @@ pointing at the old default of `7000` — the new default is `7077`.
 
 ```
 booktracker/
-├── app.py                    Flask routes + CLI entry point (`python app.py
-│                             sync|serve|--version`)
+├── app.py                    Flask routes + CLI entry point
+│                             (sync | serve [--lan] | paths | init-config |
+│                             install-service | uninstall-service | --version),
+│                             request guard (CSRF / Host checks), built-in
+│                             periodic sync
+├── config.py                 Per-OS file locations (config, data, logs, DB)
+│                             and config.ini / environment-variable settings
+├── service.py                Per-OS autostart: systemd user unit, XDG
+│                             autostart, macOS launchd agent, Windows Startup
+│                             shortcut
 ├── db.py                     SQLite schema, CSV sync/diff logic,
-│                             search/star/status queries, and the manual-add
-│                             / edit / remove logic behind the Add page
+│                             search/star/status queries, manual add/edit/
+│                             remove, and the imported_books (My Books) table
 ├── external_search.py        Hardcover / Google Books / Open Library /
 │                             Audible / Audnexus lookups and Amazon URL
 │                             scraping for the Add page
-├── template.py               HTML/CSS/JS for the year page, ★ My Starred,
-│                             and the Add page (server-rendered strings, no
-│                             build step)
-├── version.py                Single source of truth for the app name +
-│                             version string, shown in every page header
-├── requirements.txt          Python dependencies (Flask, requests)
-├── .gitignore                Excludes the local SQLite DB, venv/,
-│                             __pycache__/, and OS files from git
-├── static/
-│   ├── icon.png              App icon
-│   ├── favicon-32.png        Favicon, 32px
-│   └── favicon-64.png        Favicon, 64px
-├── install.sh                Linux-only: installs the app as a `systemd
-│                             --user` background service
-├── uninstall.sh              Linux-only: removes the systemd units
-│                             installed by install.sh
-├── booktracker.service       systemd unit: runs the web server
-├── booktracker-sync.service  systemd unit: one-shot LNRelease sync
-├── booktracker-sync.timer    systemd timer: runs the sync service daily
-└── README.md                 This file
+├── template.py               Server-rendered HTML/CSS/JS for every page
+├── version.py                App name + version string
+├── requirements.txt          Flask, requests, waitress
+├── install.sh / uninstall.sh Linux + macOS installer wrappers
+├── install.ps1 / uninstall.ps1  Windows installer wrappers
+├── tests/test_smoke.py       Cross-platform smoke tests (stdlib unittest)
+├── .github/workflows/ci.yml  CI: Ubuntu, Debian, Rocky 9, macOS, Windows
+├── static/                   App icon + favicons
+├── .gitignore
+└── README.md
 ```
 
-Not shown above: `booktracker.db`, the SQLite database itself, and
+Not shown above: `booktracker.db`, the SQLite database itself (see
+[Where your files live](#where-your-files-live)), `config.ini`, and
 `venv/`, the virtual environment — both are created the first time you
 run the app and are excluded from git via `.gitignore`, since they're
 local, machine-specific, and (in the DB's case) contain your personal
@@ -553,4 +657,24 @@ version, the following categories have been addressed:
   first. Both fixes were verified against actual exploit payloads run
   through the real code (see the version's changelog entry below), not
   just reviewed by eye.
+- **CSRF and DNS rebinding (2026.11.24-01).** The app has no login, so
+  every POST must come from the app's own pages. A cross-site `Origin`
+  or `Sec-Fetch-Site` header gets a 403. Requests whose `Host` is an
+  unknown domain name are also refused. IP addresses, `localhost`, this
+  machine's host name, and `allowed_hosts` are accepted.
+- **Bind address.** The server listens on `127.0.0.1` unless you choose
+  `--lan`.
+- **SSRF via redirects.** "Fetch from URL" no longer follows redirects
+  automatically. Each hop is re-checked against the Amazon host
+  allowlist.
+- **Secrets** live only in `config.ini` (mode 600) or the environment,
+  never in the app folder or a service file.
 
+## Development
+
+```bash
+venv/bin/python -m unittest discover -s tests -v
+```
+
+CI (`.github/workflows/ci.yml`) runs the tests on Ubuntu, Debian, Rocky
+Linux 9, macOS, and Windows, with Python 3.9 and 3.13.

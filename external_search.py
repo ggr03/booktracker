@@ -65,6 +65,8 @@ from urllib.parse import urlparse
 
 import requests
 
+import config as _config
+
 REQUEST_TIMEOUT = 8
 USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 BookTracker/2026.08.05-01")
@@ -77,8 +79,10 @@ USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 # unbounded amount of time.
 MAX_SCRAPED_HTML_CHARS = 1_500_000
 
-GOOGLE_BOOKS_API_KEY = os.environ.get("GOOGLE_BOOKS_API_KEY", "").strip()
-HARDCOVER_API_TOKEN = os.environ.get("HARDCOVER_API_TOKEN", "").strip()
+# Read from the environment first, then config.ini (see config.py) --
+# never from a file inside the app folder, so tokens can't end up in git.
+GOOGLE_BOOKS_API_KEY = _config.secret("api", "google_books_key")
+HARDCOVER_API_TOKEN = _config.secret("api", "hardcover_token")
 
 
 class ExternalSearchError(Exception):
@@ -582,7 +586,8 @@ query BookBySlug($slug: String!) {
 def _hardcover_graphql(query: str, variables: Optional[dict] = None) -> Dict[str, Any]:
     if not HARDCOVER_API_TOKEN:
         raise ExternalSearchError(
-            "Hardcover isn't configured -- set HARDCOVER_API_TOKEN in the environment "
+            "Hardcover isn't configured -- add hardcover_token to config.ini (see "
+            "`python app.py paths`) or set HARDCOVER_API_TOKEN in the environment "
             "(get a free token at https://hardcover.app/account/api). Never put the token "
             "directly in a source file; it can delete your Hardcover account if leaked."
         )
@@ -1034,11 +1039,29 @@ def fetch_amazon_product(url: str, asin: str) -> Dict[str, Any]:
         result["warning"] = "That doesn't look like an Amazon product URL; fill in details manually."
         return result
     try:
-        resp = requests.get(url, timeout=REQUEST_TIMEOUT, headers={
+        headers = {
             "User-Agent": USER_AGENT,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
-        })
+        }
+        # Follow redirects by hand so every hop is re-checked against the
+        # Amazon host allowlist -- otherwise a redirect could send this
+        # server-side request to an arbitrary (e.g. internal) host.
+        next_url = url
+        for _hop in range(5):
+            resp = requests.get(next_url, timeout=REQUEST_TIMEOUT, headers=headers,
+                                allow_redirects=False)
+            if resp.is_redirect or resp.is_permanent_redirect:
+                from urllib.parse import urljoin
+                next_url = urljoin(next_url, resp.headers.get("Location", ""))
+                if not _is_amazon_url(next_url):
+                    result["warning"] = "Amazon redirected somewhere unexpected; fill in details manually."
+                    return result
+                continue
+            break
+        else:
+            result["warning"] = "Too many redirects from Amazon; fill in details manually."
+            return result
         resp.raise_for_status()
         html_text = resp.text[:MAX_SCRAPED_HTML_CHARS]
         # Normalize non-breaking-space entities to regular spaces before

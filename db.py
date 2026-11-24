@@ -30,8 +30,12 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
-DEFAULT_DB_PATH = Path(__file__).parent / "booktracker.db"
-_LEGACY_DB_PATH = Path(__file__).parent / "lnrelease.db"  # pre-rename filename
+import config as _config
+
+# Resolved per-OS (see config.default_db_path): an existing DB next to
+# app.py is kept in place; new installs use the per-user data directory.
+DEFAULT_DB_PATH = _config.default_db_path()
+_LEGACY_DB_PATH = _config.LEGACY_LNRELEASE_DB  # pre-rename filename
 
 CSV_URL_DEFAULT = "https://raw.githubusercontent.com/LNRelease/lnrelease.github.io/main/books.csv"
 
@@ -96,6 +100,27 @@ CREATE TABLE IF NOT EXISTS series_format_pref (
     formats     TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
+
+-- "My Books" -- books imported from an external CSV (Goodreads export).
+-- Deliberately a SEPARATE table from `releases`: the user explicitly asked
+-- that these not be mixed with LNRelease/starred data, even though the same
+-- book may appear in both. Only 5 fields are kept (Title, Author,
+-- Publisher, Date Published, Date Read); all other Goodreads columns are
+-- ignored. `imported_signature` is a hash of (title, author, date_published)
+-- and makes re-imports idempotent -- same book imported twice is skipped.
+CREATE TABLE IF NOT EXISTS imported_books (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    imported_signature  TEXT NOT NULL UNIQUE,
+    title               TEXT NOT NULL,
+    author              TEXT,
+    publisher           TEXT,
+    date_published      TEXT,
+    date_read           TEXT,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_imported_books_date_read ON imported_books(date_read);
+CREATE INDEX IF NOT EXISTS idx_imported_books_title ON imported_books(title COLLATE NOCASE);
 """
 
 # The four reading-status values. Stored/keyed with underscores
@@ -157,18 +182,30 @@ def _migrate_legacy_db_file(db_path: Path) -> None:
     """Book Tracker used to be called 'LNRelease', with a DB file named
     lnrelease.db. If the (new-name) DB doesn't exist yet but the old one
     does, adopt it instead of silently starting an empty database."""
-    if db_path == DEFAULT_DB_PATH and not db_path.exists() and _LEGACY_DB_PATH.exists():
+    if db_path == _config.LEGACY_APP_DIR_DB and not db_path.exists() and _LEGACY_DB_PATH.exists():
         _LEGACY_DB_PATH.rename(db_path)
         print(f"Renamed {_LEGACY_DB_PATH.name} -> {db_path.name} (Book Tracker was previously LNRelease).")
 
 
+# DB files whose schema/migrations have already been applied by this
+# process. get_conn() runs on every request, so doing the CREATE TABLE /
+# ALTER TABLE pass only once per file keeps requests cheap.
+_initialized_paths: set = set()
+
+
 def get_conn(db_path: Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
-    _migrate_legacy_db_file(db_path)
-    conn = sqlite3.connect(str(db_path))
+    db_path = Path(db_path)
+    key = str(db_path.resolve())
+    if key not in _initialized_paths:
+        _migrate_legacy_db_file(db_path)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path), timeout=15)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.executescript(SCHEMA)
-    _migrate(conn)
+    if key not in _initialized_paths:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.executescript(SCHEMA)
+        _migrate(conn)
+        _initialized_paths.add(key)
     return conn
 
 
@@ -228,7 +265,7 @@ def sync_from_csv(csv_text: str, db_path: Path = DEFAULT_DB_PATH) -> Dict[str, i
     are new or actually changed get written -- unchanged rows are skipped
     entirely, so a re-sync with no real changes touches zero rows."""
     conn = get_conn(db_path)
-    now = datetime.datetime.utcnow().isoformat(timespec="seconds")
+    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")
     added = updated = unchanged = 0
 
     incoming = _group_csv(csv_text)
@@ -414,7 +451,7 @@ def get_starred_slugs(db_path: Path = DEFAULT_DB_PATH) -> List[str]:
 
 
 def _now() -> str:
-    return datetime.datetime.utcnow().isoformat(timespec="seconds")
+    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")
 
 
 def set_volume_status(release_id: int, status: str, db_path: Path = DEFAULT_DB_PATH) -> List[Dict[str, Any]]:
@@ -735,5 +772,253 @@ def remove_manual_release(release_id: int, db_path: Path = DEFAULT_DB_PATH) -> N
         raise ValueError("only manually-added releases can be removed this way -- unstar an LNRelease title instead")
     conn.execute("DELETE FROM volume_status WHERE release_id = ?", (release_id,))
     conn.execute("DELETE FROM releases WHERE id = ?", (release_id,))
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# "My Books" -- imported from an external CSV (Goodreads export).
+# Separate table, separate lifecycle, deliberately NOT mixed with the
+# `releases` table used by My Starred / the year pages. Only five fields
+# are kept: title, author, publisher, date_published, date_read.
+# ---------------------------------------------------------------------------
+
+# Sanity caps. A typical Goodreads export with 1,000 books is ~500 KB; the
+# 20 MB / 50,000-row caps give 40x headroom on both axes while still
+# bounding worst-case work (and memory) if a hostile or malformed file is
+# uploaded. The per-request 25 MB Flask cap (see app.py) provides an
+# outer defence before this code even runs.
+MAX_IMPORT_ROWS = 50_000
+MAX_IMPORT_WARNINGS = 100
+
+
+def _imported_signature(title: str, author: Optional[str], date_published: Optional[str]) -> str:
+    """Stable dedupe key for imported books: (title, author, date_published),
+    case-insensitively. Publisher is deliberately excluded -- a Goodreads
+    export can change 'Publisher' slightly between syncs (e.g. 'Penguin'
+    vs 'Penguin Books'), and that shouldn't cause a duplicate. If all three
+    are empty (a truly degenerate row) the signature still hashes to a
+    stable non-empty string, so a UNIQUE constraint violation still happens
+    on re-import rather than silently allowing duplicates."""
+    parts = [(x or "").strip().lower() for x in (title, author, date_published)]
+    return _hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
+
+
+def _parse_year_only(text: str) -> Optional[str]:
+    """'2019' -> '2019'; 'copyright 2019' -> '2019'; '' -> None."""
+    if not text:
+        return None
+    m = _re.search(r"\b(1[0-9]{3}|20[0-9]{2})\b", text)
+    return m.group(1) if m else None
+
+
+def _parse_iso_or_goodreads_date(text: str) -> Optional[str]:
+    """Goodreads Date Read is 'YYYY/MM/DD'. Also accept 'YYYY-MM-DD'.
+    '0000/00/00' (Goodreads' unread placeholder) and anything unparseable
+    become None -- treated as unread, matching the user's "blank is
+    Unsorted" rule."""
+    if not text:
+        return None
+    text = text.strip()
+    if not text or text == "0000/00/00":
+        return None
+    m = _re.fullmatch(r"(\d{4})[/-](\d{1,2})[/-](\d{1,2})", text)
+    if not m:
+        return None
+    try:
+        return datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3))).isoformat()
+    except ValueError:
+        return None
+
+
+def parse_goodreads_csv(csv_text: str) -> tuple:
+    """Parse a Goodreads-format CSV export.
+
+    Returns (rows, warnings, skipped_rows):
+      rows        -- list of dicts with keys title, author, publisher,
+                     date_published, date_read
+      warnings    -- list of fixed human-readable warning strings (capped)
+      skipped_rows -- count of rows dropped for having no title
+
+    Raises ValueError only for structural problems (empty file, no
+    Title column). The message is a fixed string, never the raw
+    exception text.
+    """
+    if not csv_text or not csv_text.strip():
+        raise ValueError("CSV file is empty")
+
+    reader = _csv.DictReader(_io.StringIO(csv_text))
+    if not reader.fieldnames:
+        raise ValueError("CSV has no header row")
+
+    # Case-insensitive column lookup -- Goodreads exports use Title Case
+    # headers, but a hand-edited file might not.
+    field_map: Dict[str, str] = {}
+    for name in reader.fieldnames:
+        if name:
+            field_map[name.strip().lower()] = name
+
+    if "title" not in field_map:
+        raise ValueError("CSV must have a 'Title' column")
+
+    def col(row: Dict[str, str], key: str) -> str:
+        name = field_map.get(key)
+        if not name:
+            return ""
+        return (row.get(name) or "").strip()
+
+    rows: List[Dict[str, Any]] = []
+    warnings: List[str] = []
+    skipped_rows = 0
+    over_limit = False
+
+    for i, raw in enumerate(reader, start=2):  # row 1 is the header
+        if i - 1 > MAX_IMPORT_ROWS:
+            warnings.append(f"Stopped at row {i} — import limit is {MAX_IMPORT_ROWS} rows")
+            over_limit = True
+            break
+        title = col(raw, "title")
+        if not title:
+            skipped_rows += 1
+            continue
+        author = col(raw, "author") or None
+        publisher = col(raw, "publisher") or None
+        date_published = _parse_year_only(col(raw, "year published"))
+        date_read_raw = col(raw, "date read")
+        date_read = _parse_iso_or_goodreads_date(date_read_raw)
+        if date_read_raw and not date_read and len(warnings) < MAX_IMPORT_WARNINGS:
+            # Note: deliberately NOT including `date_read_raw` in the
+            # message -- that's user-controlled CSV content, and we don't
+            # want it flowing back into any log/error surface.
+            warnings.append(f"Row {i}: unrecognized Date Read value — treated as unread")
+        rows.append({
+            "title": title,
+            "author": author,
+            "publisher": publisher,
+            "date_published": date_published,
+            "date_read": date_read,
+        })
+
+    if not over_limit and len(warnings) > MAX_IMPORT_WARNINGS:
+        extra = len(warnings) - MAX_IMPORT_WARNINGS
+        warnings = warnings[:MAX_IMPORT_WARNINGS] + [f"…and {extra} more warnings (suppressed)"]
+
+    return rows, warnings, skipped_rows
+
+
+def add_imported_books(rows: List[Dict[str, Any]], db_path: Path = DEFAULT_DB_PATH) -> Dict[str, int]:
+    """Bulk-insert parsed CSV rows into `imported_books`.
+
+    Returns {added, skipped, errors}. `skipped` counts dedupe hits (rows
+    whose signature already exists) -- re-importing the same Goodreads
+    export a second time should report 'skipped: N' and add nothing.
+    """
+    conn = get_conn(db_path)
+    now = _now()
+    added = 0
+    skipped = 0
+    errors = 0
+    for row in rows:
+        sig = _imported_signature(row["title"], row.get("author"), row.get("date_published"))
+        try:
+            conn.execute(
+                "INSERT INTO imported_books "
+                "(imported_signature, title, author, publisher, date_published, date_read, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (sig, row["title"], row.get("author"), row.get("publisher"),
+                 row.get("date_published"), row.get("date_read"), now, now),
+            )
+            added += 1
+        except sqlite3.IntegrityError:
+            skipped += 1
+        except sqlite3.Error:
+            errors += 1
+    conn.commit()
+    conn.close()
+    return {"added": added, "skipped": skipped, "errors": errors}
+
+
+def get_imported_books(db_path: Path = DEFAULT_DB_PATH) -> List[Dict[str, Any]]:
+    """All imported books, in a stable order (by title). The page splits
+    them into Book Read / Unsorted client-side based on date_read."""
+    conn = get_conn(db_path)
+    rows = conn.execute(
+        "SELECT id, title, author, publisher, date_published, date_read "
+        "FROM imported_books ORDER BY title COLLATE NOCASE"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def update_imported_book(book_id: int, fields: Dict[str, Any], db_path: Path = DEFAULT_DB_PATH) -> Dict[str, Any]:
+    """Update editable fields of an imported book. `date_read` is the only
+    field the UI currently changes, but title/author/publisher/date_published
+    are accepted too for future-proofing; changing any of them recomputes
+    the dedupe signature so the DB stays consistent.
+
+    Raises KeyError if the book doesn't exist (caller maps that to 404),
+    ValueError if the supplied data is invalid or would collide with
+    another row (caller maps that to 400).
+    """
+    editable = {"date_read", "title", "author", "publisher", "date_published"}
+    updates: Dict[str, Any] = {k: v for k, v in fields.items() if k in editable}
+    if not updates:
+        raise ValueError("no editable fields provided")
+
+    # Normalize empty strings to NULL and strip whitespace.
+    for k in list(updates.keys()):
+        v = updates[k]
+        if isinstance(v, str):
+            v = v.strip()
+            if v == "" or v == "0000-00-00":
+                updates[k] = None
+            else:
+                updates[k] = v
+
+    if "date_read" in updates and updates["date_read"]:
+        try:
+            datetime.date.fromisoformat(updates["date_read"])
+        except ValueError:
+            raise ValueError("date_read must be YYYY-MM-DD")
+
+    conn = get_conn(db_path)
+    existing = conn.execute(
+        "SELECT id, title, author, date_published FROM imported_books WHERE id = ?", (book_id,)
+    ).fetchone()
+    if existing is None:
+        conn.close()
+        raise KeyError(book_id)
+
+    if any(k in updates for k in ("title", "author", "date_published")):
+        new_title = updates.get("title", existing["title"])
+        new_author = updates.get("author", existing["author"])
+        new_dp = updates.get("date_published", existing["date_published"])
+        updates["imported_signature"] = _imported_signature(new_title, new_author, new_dp)
+
+    set_clause = ", ".join(f"{col} = ?" for col in updates)
+    try:
+        conn.execute(
+            f"UPDATE imported_books SET {set_clause}, updated_at = ? WHERE id = ?",
+            (*updates.values(), _now(), book_id),
+        )
+    except sqlite3.IntegrityError:
+        conn.close()
+        raise ValueError("a book with those details already exists")
+    conn.commit()
+    row = conn.execute(
+        "SELECT id, title, author, publisher, date_published, date_read "
+        "FROM imported_books WHERE id = ?", (book_id,)
+    ).fetchone()
+    conn.close()
+    return dict(row)
+
+
+def remove_imported_book(book_id: int, db_path: Path = DEFAULT_DB_PATH) -> None:
+    conn = get_conn(db_path)
+    row = conn.execute("SELECT id FROM imported_books WHERE id = ?", (book_id,)).fetchone()
+    if row is None:
+        conn.close()
+        raise ValueError(f"no imported book with id {book_id}")
+    conn.execute("DELETE FROM imported_books WHERE id = ?", (book_id,))
     conn.commit()
     conn.close()

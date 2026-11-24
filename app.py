@@ -4,9 +4,18 @@ Book Tracker -- local web app for tracking light novel releases
 add yourself from Google Books, Open Library, Audible/Audnexus, or an
 Amazon product URL.
 
-    python app.py sync          # fetch books.csv, upsert into SQLite (diff-only)
-    python app.py serve         # start the local web server (default: http://127.0.0.1:7077)
-    python app.py --version     # print the version string and exit
+    python app.py sync              # fetch books.csv, upsert into SQLite (diff-only)
+    python app.py serve             # start the web server (default: http://127.0.0.1:7077)
+    python app.py serve --lan       # ...reachable from other devices on your network
+    python app.py paths             # show where the DB, config and logs live on this OS
+    python app.py init-config       # create a private config.ini for API tokens/settings
+    python app.py install-service   # start automatically at login (systemd/launchd/Windows)
+    python app.py uninstall-service
+    python app.py --version         # print the version string and exit
+
+Runs the same on Linux (Debian/Ubuntu/MX, RHEL/Rocky/Alma/Fedora),
+macOS, and Windows; see config.py for per-OS file locations and
+service.py for the per-OS autostart integration.
 
 Star clicks POST straight to this server, which writes to SQLite -- that's
 why this needs to be a running server rather than a static HTML file.
@@ -15,20 +24,102 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import ipaddress
+import socket
 import sys
+import threading
+import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import requests
 from flask import Flask, jsonify, redirect, request, abort
 
+import config
 import db
 import external_search
 import template
 from version import APP_NAME, VERSION
 
 app = Flask(__name__)
+# Global request-body cap. Nothing in this app legitimately needs more
+# than a few MB per request (the largest is a CSV import); capping it
+# here means an oversized upload is rejected before it can consume
+# memory or disk, and Werkzeug short-circuits with a 413 automatically.
+app.config['MAX_CONTENT_LENGTH'] = 25 * 1024 * 1024  # 25 MB
+
+# Per-file cap for the CSV importer specifically. Deliberately smaller
+# than the global cap so the import handler itself gets a clean error
+# message rather than the generic Werkzeug 413, and so short reads
+# (`f.read(MAX+1)`) don't ever pull the whole oversized body into memory.
+MAX_CSV_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB
+
 DB_PATH = db.DEFAULT_DB_PATH
 DEFAULT_PORT = 7077
+
+
+# ---------------------------------------------------------------------
+# Request guard: Host allowlist (DNS-rebinding defence) + same-origin
+# check on every state-changing request (CSRF defence). The app has no
+# login, so without this any web page you visit could POST to
+# http://localhost:7077 and delete or edit your books.
+# ---------------------------------------------------------------------
+
+_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+def _split_host(host_header: str) -> str:
+    host = (host_header or "").strip().lower()
+    if host.startswith("["):                    # [::1]:7077
+        return host[1:].split("]", 1)[0]
+    if host.count(":") == 1:                    # name:port / v4:port
+        return host.rsplit(":", 1)[0]
+    return host
+
+
+def _allowed_hostnames() -> set:
+    names = {"localhost"}
+    try:
+        hn = socket.gethostname().lower()
+        names |= {hn, hn.split(".")[0], hn.split(".")[0] + ".local"}
+        names.add(socket.getfqdn().lower())
+    except OSError:
+        pass
+    extra = config.get("server", "allowed_hosts")
+    names |= {h.strip().lower() for h in extra.split(",") if h.strip()}
+    return names
+
+
+_ALLOWED_HOSTNAMES = _allowed_hostnames()
+
+
+def host_is_allowed(host_header: str) -> bool:
+    host = _split_host(host_header)
+    if not host:
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return True                             # IP literals can't be DNS-rebound
+    except ValueError:
+        pass
+    return host in _ALLOWED_HOSTNAMES or host.endswith(".localhost")
+
+
+@app.before_request
+def _request_guard():
+    if not host_is_allowed(request.host):
+        abort(403, "Unrecognised host name. Open the app by IP address, or add this "
+                   "name to allowed_hosts in config.ini.")
+    if request.method in _SAFE_METHODS:
+        return None
+    fetch_site = request.headers.get("Sec-Fetch-Site")
+    if fetch_site and fetch_site not in ("same-origin", "none"):
+        abort(403, "Cross-site request blocked")
+    origin = request.headers.get("Origin")
+    if origin is not None:
+        if origin == "null" or urlparse(origin).netloc.lower() != request.host.lower():
+            abort(403, "Cross-origin request blocked")
+    return None
 
 
 def _external_error_response(e: "external_search.ExternalSearchError", status: int = 502):
@@ -86,6 +177,93 @@ def add_page():
     recent = db.get_recent_manual_releases(db_path=DB_PATH)
     return template.render_add_page(recent)
 
+
+# ---------------------------------------------------------------------
+# "My Books" -- imported from a Goodreads-format CSV. Kept deliberately
+# separate from `releases`/`stars`; the same book may legitimately exist
+# in both places. See db.py's imported_books section for the storage
+# details.
+# ---------------------------------------------------------------------
+
+@app.route("/my_books")
+def my_books_page():
+    books = db.get_imported_books(db_path=DB_PATH)
+    return template.render_my_books_page(books)
+
+
+@app.route("/api/imported_books")
+def api_imported_books():
+    """Full current list -- used by the page after an import so the UI
+    reflects whatever was actually committed without a full reload."""
+    return jsonify(db.get_imported_books(db_path=DB_PATH))
+
+
+@app.route("/api/import_books_csv", methods=["POST"])
+def api_import_books_csv():
+    if "file" not in request.files:
+        abort(400, "No file uploaded (form field must be named 'file')")
+    f = request.files["file"]
+    if not f or not f.filename:
+        abort(400, "No file selected")
+
+    # Cap the read so an oversized upload never gets buffered in memory
+    # in full. If we got MAX+1 bytes back, the file is too big.
+    raw = f.read(MAX_CSV_UPLOAD_BYTES + 1)
+    if len(raw) > MAX_CSV_UPLOAD_BYTES:
+        abort(413, f"CSV file too large (max {MAX_CSV_UPLOAD_BYTES // (1024 * 1024)} MB)")
+
+    try:
+        text = raw.decode("utf-8-sig")  # utf-8-sig strips a leading BOM (Goodreads exports have one)
+    except UnicodeDecodeError:
+        try:
+            text = raw.decode("latin-1")
+        except UnicodeDecodeError:
+            abort(400, "Could not read CSV — expected UTF-8 or Latin-1 text")
+
+    try:
+        rows, warnings, skipped_rows = db.parse_goodreads_csv(text)
+    except ValueError:
+        # parse_goodreads_csv only raises ValueError for structural
+        # problems (empty file, missing Title column); the message it
+        # would have raised is discarded here in favour of a fixed,
+        # user-friendly one, so no user-controlled text can end up in
+        # the response.
+        abort(400, "CSV is empty or missing a Title column")
+
+    result = db.add_imported_books(rows, db_path=DB_PATH)
+    result["warnings"] = warnings
+    result["skipped_rows"] = skipped_rows
+    return jsonify(result)
+
+
+@app.route("/api/imported_book/<int:book_id>/update", methods=["POST"])
+def api_update_imported_book(book_id: int):
+    body = request.get_json(silent=True) or {}
+    try:
+        row = db.update_imported_book(book_id, body, db_path=DB_PATH)
+    except KeyError:
+        # db.update_imported_book raises KeyError specifically for
+        # "no such row" -- a clean 404, message is a fixed string.
+        abort(404, "No book with that id")
+    except ValueError:
+        # Validation/duplicate errors -- fixed message, no leaked
+        # exception text.
+        abort(400, "Invalid update — check the date format (YYYY-MM-DD) and try again")
+    return jsonify(row)
+
+
+@app.route("/api/imported_book/<int:book_id>/remove", methods=["POST"])
+def api_remove_imported_book(book_id: int):
+    try:
+        db.remove_imported_book(book_id, db_path=DB_PATH)
+    except ValueError:
+        abort(404, "No book with that id")
+    return jsonify({"removed": book_id})
+
+
+# ---------------------------------------------------------------------
+# Existing routes below -- unchanged in behavior from the previous version.
+# ---------------------------------------------------------------------
 
 @app.route("/api/years")
 def api_years():
@@ -156,19 +334,8 @@ def api_by_status(status):
     return jsonify(db.get_releases_by_status(status, db_path=DB_PATH))
 
 
-# ---------------------------------------------------------------------
-# "Add a book" (its own page, /add) -- search Google Books / Open
-# Library / Audible, or paste a product URL (Amazon / Audible / Google
-# Books / Open Library / a bare ASIN), review & edit the fetched
-# metadata, then add it straight to ★ My Starred. See external_search.py
-# for source details and limitations.
-# ---------------------------------------------------------------------
-
 @app.route("/api/external_provider_status")
 def api_external_provider_status():
-    """Whether each provider that needs a credential is actually
-    configured -- lets the Add page show a hint instead of a confusing
-    error on first use."""
     return jsonify({
         "hardcover_configured": bool(external_search.HARDCOVER_API_TOKEN),
         "google_books_key_set": bool(external_search.GOOGLE_BOOKS_API_KEY),
@@ -200,9 +367,6 @@ def api_external_search():
         elif provider == "hardcover":
             results = external_search.search_hardcover(q, author)
         else:
-            # Structured title/author search (not a single blended string) --
-            # a blended query can rank an unrelated same-titled book by a
-            # different author above the one actually meant.
             results = external_search.search_google_books(q, author)
     except external_search.ExternalSearchError as e:
         return _external_error_response(e)
@@ -310,18 +474,58 @@ def api_remove_release(release_id: int):
     return jsonify({"removed": release_id})
 
 
+def run_sync(db_path: Path, csv_url: str = db.CSV_URL_DEFAULT) -> dict:
+    resp = requests.get(csv_url, timeout=30)
+    resp.raise_for_status()
+    stats = db.sync_from_csv(resp.text, db_path=Path(db_path))
+    _stamp_path(db_path).write_text(str(time.time()), encoding="utf-8")
+    return stats
+
+
 def cmd_sync(args):
     print(f"Fetching {args.csv_url} ...")
-    resp = requests.get(args.csv_url, timeout=30)
-    resp.raise_for_status()
-    stats = db.sync_from_csv(resp.text, db_path=Path(args.db))
+    stats = run_sync(Path(args.db), args.csv_url)
     print(f"Sync complete: {stats['added']} added, {stats['updated']} updated, "
           f"{stats['unchanged']} unchanged (of {stats['total']} releases in the feed).")
 
 
+# ---------------------------------------------------------------------
+# Built-in periodic sync. Replaces the old systemd timer so the same
+# behaviour works on every OS with no extra scheduler to install.
+# ---------------------------------------------------------------------
+
+def _stamp_path(db_path: Path) -> Path:
+    db_path = Path(db_path)
+    return db_path.with_name(db_path.name + ".last-sync")
+
+
+def _last_sync_time(db_path: Path) -> float:
+    try:
+        return float(_stamp_path(db_path).read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return 0.0
+
+
+def _auto_sync_loop(db_path: Path, interval_hours: int) -> None:
+    interval = max(1, interval_hours) * 3600
+    while True:
+        due_in = _last_sync_time(db_path) + interval - time.time()
+        if due_in <= 0:
+            try:
+                stats = run_sync(db_path)
+                app.logger.info("auto-sync: %s added, %s updated", stats["added"], stats["updated"])
+                print(f"[auto-sync] {stats['added']} added, {stats['updated']} updated "
+                      f"({datetime.datetime.now():%Y-%m-%d %H:%M})", flush=True)
+                due_in = interval
+            except Exception as e:  # network down etc. -- retry in an hour
+                print(f"[auto-sync] failed: {type(e).__name__}; retrying in 1 hour", flush=True)
+                due_in = 3600
+        time.sleep(min(due_in, 3600))
+
+
 def _local_ip() -> str:
-    """Best-effort guess at this machine's LAN IP, for a friendlier startup message."""
-    import socket
+    """Best-effort guess at this machine's LAN IP, for a friendlier startup
+    message. (A UDP connect() sends no packets; it just picks a route.)"""
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
@@ -332,21 +536,90 @@ def _local_ip() -> str:
         return "127.0.0.1"
 
 
+def _redirect_output(log_file: str) -> None:
+    """For background launches (pythonw on Windows, launchd on macOS)
+    where there's no console: send prints/tracebacks to a log file."""
+    path = Path(log_file).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(path, "a", encoding="utf-8", buffering=1)
+    sys.stdout = sys.stderr = fh
+
+
 def cmd_serve(args):
     global DB_PATH
+    if args.log_file:
+        _redirect_output(args.log_file)
     DB_PATH = Path(args.db)
+    host = "0.0.0.0" if args.lan else (args.host or config.get("server", "host", "127.0.0.1"))
+    port = args.port or config.get_int("server", "port", DEFAULT_PORT)
+    auto_sync = (not args.no_auto_sync) and config.get_bool("sync", "auto_sync", True)
+
     years = db.get_years(db_path=DB_PATH)
     if not years:
-        print("No data in the DB yet. Run `python app.py sync` first.", file=sys.stderr)
-        sys.exit(1)
+        if auto_sync:
+            print("No data yet -- running the first sync ...", flush=True)
+            try:
+                run_sync(DB_PATH)
+            except Exception as e:
+                print(f"First sync failed ({type(e).__name__}); the server will start anyway "
+                      "and retry later.", file=sys.stderr, flush=True)
+        else:
+            print("No data in the DB yet. Run `python app.py sync` first.", file=sys.stderr)
+            sys.exit(1)
+        years = db.get_years(db_path=DB_PATH)
+
+    if auto_sync:
+        threading.Thread(target=_auto_sync_loop, name="auto-sync", daemon=True,
+                         args=(DB_PATH, config.get_int("sync", "interval_hours", 24))).start()
+
     print(f"{APP_NAME} {VERSION}")
+    print(f"Database: {DB_PATH}")
     print(f"Years available: {years}")
-    print(f"Local:   http://127.0.0.1:{args.port}")
-    if args.host == "0.0.0.0":
-        print(f"Network: http://{_local_ip()}:{args.port}  (reachable from other devices on your LAN)")
-    else:
-        print(f"Serving on http://{args.host}:{args.port}")
-    app.run(host=args.host, port=args.port, debug=args.debug)
+    print(f"Local:   http://127.0.0.1:{port}")
+    if host in ("0.0.0.0", "::"):
+        print(f"Network: http://{_local_ip()}:{port}  (reachable from other devices on your LAN"
+              " -- there is no login, so only do this on a network you trust)")
+    elif host not in ("127.0.0.1", "localhost", "::1"):
+        print(f"Serving on http://{host}:{port}")
+    sys.stdout.flush()
+
+    if args.debug:
+        app.run(host=host, port=port, debug=True)
+        return
+    try:
+        from waitress import serve as waitress_serve
+    except ImportError:
+        print("(waitress not installed -- using Flask's development server; "
+              "run `pip install -r requirements.txt`)", file=sys.stderr)
+        app.run(host=host, port=port)
+        return
+    waitress_serve(app, host=host, port=port, threads=8, ident=APP_NAME)
+
+
+def cmd_paths(args):
+    print(f"App folder:   {config.APP_DIR}")
+    print(f"Database:     {Path(args.db)}")
+    cf = config.config_file()
+    print(f"Config file:  {cf}{'' if cf.exists() else '  (not created yet: python app.py init-config)'}")
+    print(f"Data folder:  {config.data_dir()}")
+    print(f"Log folder:   {config.log_dir()}")
+
+
+def cmd_init_config(args):
+    existed = config.config_file().exists()
+    path = config.init_config()
+    print(f"{'Config already exists' if existed else 'Created'}: {path}")
+    print("Edit it to add your Hardcover token (hardcover_token = ...).")
+
+
+def cmd_install_service(args):
+    import service
+    service.install(lan=args.lan, port=args.port)
+
+
+def cmd_uninstall_service(args):
+    import service
+    service.uninstall()
 
 
 def main():
@@ -359,11 +632,27 @@ def main():
     sync_p.add_argument("--csv-url", default=db.CSV_URL_DEFAULT)
     sync_p.set_defaults(func=cmd_sync)
 
-    serve_p = sub.add_parser("serve", help="Start the local web server")
-    serve_p.add_argument("--host", default="0.0.0.0")
-    serve_p.add_argument("--port", type=int, default=DEFAULT_PORT)
+    serve_p = sub.add_parser("serve", help="Start the web server")
+    serve_p.add_argument("--host", default=None,
+                         help="Address to listen on (default: config.ini, else 127.0.0.1)")
+    serve_p.add_argument("--lan", action="store_true",
+                         help="Listen on all interfaces (same as --host 0.0.0.0)")
+    serve_p.add_argument("--port", type=int, default=None, help=f"Port (default {DEFAULT_PORT})")
+    serve_p.add_argument("--no-auto-sync", action="store_true",
+                         help="Don't re-sync the LNRelease feed in the background")
+    serve_p.add_argument("--log-file", default=None, help="Append output to this file")
     serve_p.add_argument("--debug", action="store_true")
     serve_p.set_defaults(func=cmd_serve)
+
+    sub.add_parser("paths", help="Show file locations").set_defaults(func=cmd_paths)
+    sub.add_parser("init-config", help="Create config.ini").set_defaults(func=cmd_init_config)
+
+    inst_p = sub.add_parser("install-service", help="Start automatically at login")
+    inst_p.add_argument("--lan", action="store_true", help="Serve on your network, not just this PC")
+    inst_p.add_argument("--port", type=int, default=None)
+    inst_p.set_defaults(func=cmd_install_service)
+    sub.add_parser("uninstall-service", help="Remove the autostart entry").set_defaults(
+        func=cmd_uninstall_service)
 
     args = p.parse_args()
     args.func(args)
