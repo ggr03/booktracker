@@ -677,4 +677,4 @@ venv/bin/python -m unittest discover -s tests -v
 ```
 
 CI (`.github/workflows/ci.yml`) runs the tests on Ubuntu, Debian, Rocky
-Linux 9, macOS, and Windows, with Python 3.9 and 3.13.
+Linux 9, macOS, and Windows: Python 3.9 on Rocky 9, 3.10 and 3.13 elsewhere.
