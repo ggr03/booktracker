@@ -117,6 +117,47 @@ class SmokeTests(unittest.TestCase):
         books = self.client.get("/api/imported_books").get_json()
         self.assertTrue(any(b["title"] == "Some Book" for b in books))
 
+    # --- Amazon fetch: request host always comes from the allowlist -------
+    def test_amazon_fetch_uses_allowlisted_host(self):
+        import external_search as es
+        from unittest import mock
+        seen = []
+
+        class Resp:
+            def __init__(self, status, location=None):
+                self.status_code = status
+                self.headers = {"Location": location} if location else {}
+                self.is_redirect = status in (301, 302, 303, 307, 308)
+                self.is_permanent_redirect = status in (301, 308)
+                self.text = "<html></html>"
+
+            def raise_for_status(self):
+                pass
+
+        def fake_get(url, **kw):
+            seen.append(url)
+            self.assertFalse(kw.get("allow_redirects", True))
+            if len(seen) == 1:
+                return Resp(302, "/Some-Title/dp/0316411876/ref=x")
+            return Resp(200)
+
+        with mock.patch.object(es.requests, "get", side_effect=fake_get):
+            es.fetch_amazon_product("https://smile.amazon.co.uk/foo/dp/0316411876?tag=1", "0316411876")
+        self.assertEqual(seen, ["https://www.amazon.co.uk/dp/0316411876",
+                                "https://www.amazon.co.uk/Some-Title/dp/0316411876/ref=x"])
+
+        def evil_redirect(url, **kw):
+            return Resp(302, "http://169.254.169.254/latest/meta-data")
+
+        with mock.patch.object(es.requests, "get", side_effect=evil_redirect) as g:
+            r = es.fetch_amazon_product("https://www.amazon.com/dp/B000000000", "B000000000")
+        self.assertEqual(g.call_count, 1)
+        self.assertIn("unexpected", r["warning"])
+
+        with mock.patch.object(es.requests, "get") as g:
+            r = es.fetch_amazon_product("https://www.amazon.zz/dp/B000000000", "B000000000")
+        g.assert_not_called()
+
     # --- service helpers ---------------------------------------------------
     def test_service_args(self):
         args = service._serve_args(True, 8080, Path("/tmp/x.log"))

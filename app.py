@@ -584,7 +584,12 @@ def cmd_serve(args):
     sys.stdout.flush()
 
     if args.debug:
-        app.run(host=host, port=port, debug=True)
+        # Auto-reload + verbose logs only. Werkzeug's interactive debugger
+        # is never enabled: it allows running arbitrary code from the
+        # browser, which with --lan means anyone on the network.
+        import logging
+        logging.basicConfig(level=logging.DEBUG)
+        app.run(host=host, port=port, use_reloader=True, use_debugger=False)
         return
     try:
         from waitress import serve as waitress_serve
@@ -641,7 +646,8 @@ def main():
     serve_p.add_argument("--no-auto-sync", action="store_true",
                          help="Don't re-sync the LNRelease feed in the background")
     serve_p.add_argument("--log-file", default=None, help="Append output to this file")
-    serve_p.add_argument("--debug", action="store_true")
+    serve_p.add_argument("--debug", action="store_true",
+                         help="Auto-reload on code changes, verbose logging (no interactive debugger)")
     serve_p.set_defaults(func=cmd_serve)
 
     sub.add_parser("paths", help="Show file locations").set_defaults(func=cmd_paths)
