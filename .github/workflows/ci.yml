@@ -1,8 +1,17 @@
 name: CI
 
 on:
+  # Branch pushes are covered by their pull request; running on both doubled
+  # every job and queued up the scarce macOS runners.
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # A newer push to the same PR/branch cancels the older, still-running run.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
