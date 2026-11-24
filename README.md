@@ -765,5 +765,11 @@ version, the following categories have been addressed:
 venv/bin/python -m unittest discover -s tests -v
 ```
 
-CI (`.github/workflows/ci.yml`) runs the tests on Ubuntu, Debian, Rocky
-Linux 9, macOS, and Windows, on Python 3.11 (the minimum) and 3.14.
+CI (`.github/workflows/ci.yml`) runs the tests on Python 3.11 (the
+minimum) and 3.14:
+
+- **Every push to `main` and every pull request:** Ubuntu, Windows, Debian,
+  and Rocky Linux 9. These finish in about a minute.
+- **Pull requests, weekly (Monday), and on demand:** macOS. GitHub's free
+  macOS runners often queue for 10–20 minutes, so they don't run on every
+  push. To run them now, open **Actions → CI → Run workflow**.
